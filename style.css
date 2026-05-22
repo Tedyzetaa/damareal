@@ -1012,3 +1012,16 @@ body::before {
 
     .hero-title { font-size: 2.2rem; }
 }
+
+.foto-upload {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    margin-right: 20px;
+}
+
+#inputFoto {
+    width: 140px; /* Ajusta a largura do botão de upload */
+    font-size: 12px;
+}
