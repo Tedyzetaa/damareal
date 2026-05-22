@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Damas Real — Arena</title>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700;900&family=Crimson+Text:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
+    <!-- Chamada para o arquivo CSS -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<!-- Modal fim de jogo -->
+<div class="modal-overlay" id="modalFimJogo">
+    <div class="modal-box">
+        <div class="modal-trophy" id="modalTrophy">🏆</div>
+        <div class="modal-title"  id="modalTitle">Vitória!</div>
+        <div class="modal-subtitle" id="modalSubtitle">As Brancas venceram a partida.</div>
+        <div class="modal-actions">
+            <button class="btn-modal-secondary" onclick="fecharModal(); mudarTela('screenMenu')">Menu</button>
+            <button class="btn-modal-primary"   onclick="fecharModal(); jogarContraIA()">Jogar Novamente</button>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================
+     WRAPPER PRINCIPAL
+============================================================ -->
+<div class="app-wrapper">
+
+    <!-- ==========================
+         TELA: MENU PRINCIPAL
+    ========================== -->
+    <div id="screenMenu" class="screen active">
+
+        <!-- Auth bar -->
+        <div class="auth-bar">
+            <div id="googleBtnContainer"></div>
+            <div id="userInfo" class="user-profile">
+                <img id="userPicture" src="" alt="Avatar">
+                <span id="userName">Jogador</span>
+                <button class="btn-logout" onclick="executarLogout()">Sair</button>
+            </div>
+        </div>
+
+        <!-- Hero -->
+        <div class="hero">
+            <div class="hero-emblem">
+                <svg viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <!-- Tabuleiro estilizado 2x2 -->
+                    <rect width="72" height="72" rx="12" fill="#1c2330"/>
+                    <rect x="8"  y="8"  width="26" height="26" rx="3" fill="#7b4f2e" opacity="0.9"/>
+                    <rect x="38" y="8"  width="26" height="26" rx="3" fill="#e8d5a3" opacity="0.9"/>
+                    <rect x="8"  y="38" width="26" height="26" rx="3" fill="#e8d5a3" opacity="0.9"/>
+                    <rect x="38" y="38" width="26" height="26" rx="3" fill="#7b4f2e" opacity="0.9"/>
+                    <!-- Peça preta -->
+                    <circle cx="21" cy="21" r="9" fill="#222" stroke="#555" stroke-width="1.5"/>
+                    <circle cx="21" cy="20" r="7" fill="none" stroke="rgba(100,100,100,0.3)" stroke-width="1"/>
+                    <!-- Peça branca -->
+                    <circle cx="51" cy="51" r="9" fill="#e8d5a3" stroke="#c8a060" stroke-width="1.5"/>
+                    <circle cx="51" cy="50" r="7" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
+                    <!-- Coroa dourada no canto -->
+                    <text x="38" y="35" font-size="18" fill="#c8963c" opacity="0.95">♛</text>
+                </svg>
+            </div>
+            <h1 class="hero-title">DAMAS REAL</h1>
+            <p class="hero-subtitle">Arena de Partidas &amp; Torneios Competitivos</p>
+        </div>
+
+        <div class="divider"><span>Selecione o Modo</span></div>
+
+        <!-- Cards de modo -->
+        <div class="menu-grid">
+
+            <button class="mode-card online" onclick="irParaLobby('online')">
+                <div class="mode-icon">⚡</div>
+                <div class="mode-text">
+                    <span class="mode-name">
+                        Partida Online
+                        <span class="badge badge-live">LIVE</span>
+                    </span>
+                    <span class="mode-desc">Confronte oponentes reais via matchmaking em tempo real</span>
+                </div>
+                <span class="mode-arrow">›</span>
+            </button>
+
+            <button class="mode-card apostada" onclick="irParaLobby('apostada')">
+                <div class="mode-icon">💰</div>
+                <div class="mode-text">
+                    <span class="mode-name">
+                        Mesa Apostada
+                        <span class="badge badge-beta">BETA</span>
+                    </span>
+                    <span class="mode-desc">Dispute saldos via Pix com protocolo Lockstep de segurança</span>
+                </div>
+                <span class="mode-arrow">›</span>
+            </button>
+
+            <button class="mode-card ia" onclick="jogarContraIA()">
+                <div class="mode-icon">🤖</div>
+                <div class="mode-text">
+                    <span class="mode-name">
+                        Treino contra IA
+                        <span class="badge badge-local">LOCAL</span>
+                    </span>
+                    <span class="mode-desc">Minimax Profundidade 4 com poda Alpha-Beta — desafio garantido</span>
+                </div>
+                <span class="mode-arrow">›</span>
+            </button>
+
+        </div>
+    </div><!-- /screenMenu -->
+
+
+    <!-- ==========================
+         TELA: LOBBY
+    ========================== -->
+    <div id="screenLobby" class="screen">
+
+        <div class="page-header">
+            <button class="btn-back" onclick="mudarTela('screenMenu')">
+                ‹ Voltar
+            </button>
+            <h2 class="page-title" id="lobbyTitle">Configurar Partida</h2>
+        </div>
+
+        <div class="config-panel">
+
+            <div class="config-group">
+                <label class="config-label" for="gameId">ID da Sala</label>
+                <input type="text" id="gameId" class="config-input" value="sala_100" placeholder="ex: sala_001">
+            </div>
+
+            <div class="config-group">
+                <label class="config-label" for="playerColor">Sua Cor</label>
+                <div class="select-wrapper">
+                    <select id="playerColor" class="config-select">
+                        <option value="w">⬜  Brancas — inicia o jogo</option>
+                        <option value="b">⬛  Pretas</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="config-group">
+                <label class="config-label" for="rulesSelectLobby">Regras do Jogo</label>
+                <div class="select-wrapper">
+                    <select id="rulesSelectLobby" class="config-select">
+                        <option value="brasileira">🇧🇷  Brasileira — Dama com voo longo</option>
+                        <option value="americana">🇺🇸  Americana (Checkers) — Dama curta</option>
+                    </select>
+                </div>
+            </div>
+
+            <button class="btn-primary" onclick="conectarServidor()">
+                ⚔ Entrar na Arena
+            </button>
+
+        </div>
+    </div><!-- /screenLobby -->
+
+
+    <!-- ==========================
+         TELA: JOGO
+    ========================== -->
+    <div id="screenGame" class="screen">
+        <div class="game-layout">
+
+            <!-- Top bar -->
+            <div class="game-topbar">
+                <button class="btn-surrender" onclick="confirmarAbandono()">
+                    🏳 Abandonar
+                </button>
+                <div class="turn-panel">
+                    <div class="turn-indicator white" id="turnIndicator"></div>
+                    <span class="turn-text" id="status">Aguardando...</span>
+                </div>
+                <div style="width:100px;"></div>
+            </div>
+
+            <!-- Peças capturadas -->
+            <div class="capture-bar" id="captureBar">
+                <div class="capture-side">
+                    <span class="capture-label">Cap.</span>
+                    <div class="capture-dots" id="capturedByWhite"></div>
+                </div>
+                <div class="capture-side" style="flex-direction:row-reverse;">
+                    <span class="capture-label">Cap.</span>
+                    <div class="capture-dots" id="capturedByBlack"></div>
+                </div>
+            </div>
+
+            <!-- Tabuleiro com coordenadas -->
+            <div class="board-container">
+                <div class="board-coords-letters" id="coordLetters"></div>
+                <div class="board-coords-numbers" id="coordNumbers"></div>
+                <div class="board" id="board"></div>
+            </div>
+
+            <!-- Footer com regras -->
+            <div class="game-footer">
+                <label for="rulesSelectGame">Regras:</label>
+                <select id="rulesSelectGame" onchange="mudarRegras(this.value)">
+                    <option value="brasileira">Brasileira</option>
+                    <option value="americana">Americana</option>
+                </select>
+            </div>
+
+        </div>
+    </div><!-- /screenGame -->
+
+</div><!-- /app-wrapper -->
+
+<!-- Chamada para o arquivo JS -->
+<script src="config.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
