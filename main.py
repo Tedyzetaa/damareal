@@ -138,42 +138,36 @@ async def health():
 async def auth_google(request: Request, payload: AuthToken):
     try:
         id_info = id_token.verify_oauth2_token(
-            payload.token,
-            google_requests.Request(),
-            GOOGLE_CLIENT_ID
+            payload.token, google_requests.Request(), GOOGLE_CLIENT_ID
         )
     except ValueError:
         raise HTTPException(status_code=401, detail="Token inválido ou expirado.")
 
-    google_id     = id_info['sub']
-    email_google  = id_info.get('email', '')
-    nome_google   = id_info.get('name', 'Jogador Real')
+    google_id      = id_info['sub']
+    email_google   = id_info.get('email', '')
+    nome_google    = id_info.get('name', 'Jogador Real')
     picture_google = id_info.get('picture', '')
 
-    profile_data = {
-        "google_id": google_id,
-        "nome": nome_google,
-        "email": email_google,
-        "foto_url": picture_google
-    }
+    try:
+        supabase.table("perfis").upsert(
+            {"google_id": google_id, "nome": nome_google,
+             "email": email_google, "foto_url": picture_google},
+            on_conflict="google_id"
+        ).execute()
+        res   = supabase.table("perfis").select("nick, saldo, foto_url").eq("google_id", google_id).execute()
+        row   = res.data[0] if res.data else {}
+    except Exception as e:
+        print(f"[SUPABASE ERROR] auth_google: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro no banco de dados: {str(e)}")
 
-    supabase.table("perfis").upsert(profile_data, on_conflict="google_id").execute()
-
-    res = supabase.table("perfis").select("nick, saldo, foto_url").eq("google_id", google_id).execute()
-    row = res.data[0] if res.data else None
-
-    nick  = row.get("nick") if row else None
-    saldo = row.get("saldo", 0.0) if row else 0.0
-    foto_final = row.get("foto_url") if row and row.get("foto_url") else picture_google
+    nick       = row.get("nick")
+    saldo      = row.get("saldo") or 0.0
+    foto_final = row.get("foto_url") or picture_google
 
     return {
-        "status":    "authenticated",
-        "google_id": google_id,
-        "email":     email_google,
-        "name":      nome_google,
-        "nick":      nick,
-        "picture":   foto_final,
-        "saldo":     round(saldo, 2),
+        "status": "authenticated", "google_id": google_id,
+        "email": email_google, "name": nome_google,
+        "nick": nick, "picture": foto_final, "saldo": round(saldo, 2),
     }
 
 @app.post("/update-profile")
@@ -426,7 +420,11 @@ class DamasEngine:
                             if 0 <= nr < 8 and 0 <= nc < 8:
                                 candidatos.add((nr, nc))
                 for nr, nc in candidatos:
-                    ok, _, _ = DamasEngine.validar_e_mover(board, r, c, nr, nc, player, regras, continue_capture=True)
+                    # Usa continue_capture=True só para candidatos de captura (dist>=2)
+                    # Para movimentos simples (dist=1), False permite andar normalmente
+                    dist = max(abs(nr - r), abs(nc - c))
+                    cc_flag = dist >= 2  # só suprime recursão em capturas, não bloqueia passos simples
+                    ok, _, _ = DamasEngine.validar_e_mover(board, r, c, nr, nc, player, regras, continue_capture=cc_flag)
                     if ok:
                         mov = ((r, c), (nr, nc))
                         if abs(nr - r) >= 2:
