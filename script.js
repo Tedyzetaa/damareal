@@ -23,7 +23,7 @@ let userProfile = {
 };
 
 let historicoJogos = [];
-const API = 'http://localhost:6500';
+const API = 'https://damareal1-2ml7.onrender.com';
 
 // ============================================================
 // TOAST
@@ -224,7 +224,7 @@ function jogarContraIA() {
     document.getElementById('playerColor').value = 'w';
     if (ws) ws.close();
     const gameId = 'ia_room_' + Math.floor(Math.random() * 99999);
-    ws = new WebSocket(`ws://localhost:6500/ws/ia/${gameId}`);
+    ws = new WebSocket(`wss://damareal1-2ml7.onrender.com/ws/ia/${gameId}`);
     ws.onopen    = () => { mudarTela('screenGame'); renderizarCoordenadas(); renderCaptureDots(); showToast('Conectado! Boa sorte.', 'success'); };
     ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), 'w');
     ws.onerror   = ()  => showToast('Erro de conexão com o servidor.', 'error');
@@ -249,7 +249,7 @@ function conectarServidor() {
     capturedByWhite = 0; capturedByBlack = 0; lastBoard = null;
     partidaIdAtual = null; partidaRegistrada = false;
     if (ws) ws.close();
-    ws = new WebSocket(`ws://localhost:6500/ws/partida/${gameId}/${color}`);
+    ws = new WebSocket(`wss://damareal1-2ml7.onrender.com/ws/partida/${gameId}/${color}`);
     ws.onopen    = () => { mudarTela('screenGame'); renderizarCoordenadas(); renderCaptureDots(); ws.send(JSON.stringify({ type: 'config_rules', regras: rules })); showToast('Conectado!', 'success'); };
     ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), color);
     ws.onerror   = ()  => showToast('Falha ao conectar com o servidor.', 'error');
