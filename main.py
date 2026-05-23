@@ -378,6 +378,7 @@ class DamasEngine:
     @staticmethod
     def tem_capturas_obrigatorias_da_peca(board: List[List[str]], r: int, c: int, cor: str, regras: str) -> bool:
         """Verifica se uma peça específica tem alguma captura válida (respeitando a regra de não ir para trás)."""
+        """Verifica se uma peça específica tem alguma captura válida."""
         peca = board[r][c]
         if peca == '.' or peca.lower() != cor:
             return False
@@ -526,14 +527,24 @@ class DamasEngine:
             if peca == 'b' and dr <= 0:
                 return False, board, "Peças pretas comuns só movem para a frente (linhas maiores)"
 
+            # 1. MOVIMENTO SIMPLES (Andar 1 casa nas diagonais)
             if abs(dr) == 1 and abs(dc) == 1:
                 if continue_capture: # Se veio de uma captura combo, não pode apenas andar
+                if continue_capture:
                     return False, board, "Precisa continuar capturando"
+
+                # REGRA 2: Bloqueio de direção apenas para passos normais
+                if peca == 'w' and dr >= 0:
+                    return False, board, "Peças brancas comuns só andam para a frente"
+                if peca == 'b' and dr <= 0:
+                    return False, board, "Peças pretas comuns só andam para a frente"
+
                 nb = [row[:] for row in board]
                 nb[r_from][c_from] = "."
                 nb[r_to][c_to] = peca
                 if (player == "w" and r_to == 0) or (player == "b" and r_to == 7):
                     nb[r_to][c_to] = player.upper()
+                nb[r_to][c_to] = 'W' if (peca == 'w' and r_to == 0) else ('B' if (peca == 'b' and r_to == 7) else peca)
                 return True, nb, "OK"
             elif abs(dr) == 2 and abs(dc) == 2:
                 rm, cm = r_from + dr//2, c_from + dc//2
@@ -547,11 +558,35 @@ class DamasEngine:
                 nb[r_to][c_to] = peca
                 if (player == "w" and r_to == 0) or (player == "b" and r_to == 7):
                     nb[r_to][c_to] = player.upper()
+            # 2. CAPTURA SIMPLES (Pular 2 casas) - Aqui PODE ir para trás!
+            if abs(dr) == 2 and abs(dc) == 2:
+                rm, cm = (r_from + r_to) // 2, (c_from + c_to) // 2
+                pc_meio = board[rm][cm]
 
                 # Verifica se essa peça que acabou de mover ainda tem capturas válidas
                 if DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
                     return True, nb, "MULTI_CAPTURE"
                 return True, nb, "OK"
+                # Verifica se tem uma peça inimiga no meio para comer
+                if pc_meio != '.' and pc_meio.lower() != player:
+                    nb = [row[:] for row in board]
+                    nb[r_from][c_from] = "."
+                    nb[rm][cm] = "."  # Remove a peça comida
+
+                    # Promoção a Dama se terminar na última fileira
+                    if peca == 'w' and r_to == 0:
+                        nb[r_to][c_to] = 'W'
+                    elif peca == 'b' and r_to == 7:
+                        nb[r_to][c_to] = 'B'
+                    else:
+                        nb[r_to][c_to] = peca
+
+                    # Verifica combo
+                    if DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
+                        return True, nb, "MULTI_CAPTURE"
+                    return True, nb, "OK"
+
+            return False, board, "Movimento inválido"
 
         elif peca in ['W', 'B']:
             if abs(dr) != abs(dc):
