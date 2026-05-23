@@ -459,7 +459,6 @@ async function processarLogin(token) {
 
         showToast(`Bem-vindo, ${nomeExibido}!`, 'success');
         await carregarPerfilDoServidor(userData.google_id);
-        // healthCheck removido daqui (NOVO-08)
     } catch (err) {
         console.error("Erro no processamento do login:", err);
     }
@@ -631,12 +630,12 @@ async function salvarPerfil(event) {
 }
 
 // ============================================================
-// INICIALIZAÇÃO (NOVO-08 e NOVO-01)
+// INICIALIZAÇÃO (NOVO-08 e V3-07)
 // ============================================================
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     inicializarBotaoGoogle();
-    healthCheck();                // Acorda o servidor imediatamente
-    verificarLoginPersistente(); // Tenta relogar após warm-up
+    await healthCheck();                // Aguarda o servidor acordar
+    verificarLoginPersistente();        // Só então tenta o relogin
 });
 
 // NOVO-01 + NOVO-06: Persistência apenas com localStorage

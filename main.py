@@ -9,8 +9,7 @@ from datetime import date
 from typing import Dict, List, Optional, Tuple
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from dotenv import load_dotenv
@@ -29,10 +28,10 @@ GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY")
 
-# Validação obrigatória das variáveis do Supabase (NOVO-04)
-if not SUPABASE_URL or not SUPABASE_KEY:
+# Validação obrigatória das variáveis do Supabase e Google (NOVO-04 + Melhoria B)
+if not SUPABASE_URL or not SUPABASE_KEY or not GOOGLE_CLIENT_ID:
     raise RuntimeError(
-        "SUPABASE_URL e SUPABASE_ANON_KEY são obrigatórias. "
+        "Variáveis obrigatórias ausentes: SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_CLIENT_ID. "
         "Configure-as no painel do Render ou no arquivo .env."
     )
 
@@ -43,11 +42,9 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ================================================================
 def ensure_avatars_bucket():
     try:
-        # Tenta buscar o bucket existente
         supabase.storage.get_bucket("avatars")
         print("Bucket 'avatars' já existe.")
     except Exception:
-        # Se ocorrer erro (provavelmente 404 porque não existe), então cria
         try:
             print("Criando bucket 'avatars'...")
             supabase.storage.create_bucket("avatars", {"public": True})
@@ -56,7 +53,6 @@ def ensure_avatars_bucket():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # A lógica de inicialização vai aqui
     ensure_avatars_bucket()
     yield
 
@@ -104,7 +100,7 @@ def validar_cpf(cpf: str) -> bool:
     return True
 
 # ================================================================
-# MODELOS PYDANTIC
+# MODELOS PYDANTIC (Melhoria C)
 # ================================================================
 class AuthToken(BaseModel):
     token: str
@@ -116,13 +112,15 @@ class RegistrarJogoPayload(BaseModel):
     valor:      float = Field(default=0.0, ge=0)
     partida_id: Optional[str] = None
 
-    @validator('tipo')
+    @field_validator('tipo', mode='before')
+    @classmethod
     def tipo_valido(cls, v):
         if v not in ('ia', 'online', 'aposta', 'apostada'):
             raise ValueError("tipo deve ser 'ia', 'online', 'aposta' ou 'apostada'")
         return 'aposta' if v == 'apostada' else v
 
-    @validator('resultado')
+    @field_validator('resultado', mode='before')
+    @classmethod
     def resultado_valido(cls, v):
         if v not in ('vitoria', 'derrota', 'empate'):
             raise ValueError("resultado deve ser 'vitoria', 'derrota' ou 'empate'")
@@ -156,10 +154,9 @@ async def auth_google(request: Request, payload: AuthToken):
         "google_id": google_id,
         "nome": nome_google,
         "email": email_google,
-        "foto_url": picture_google   # inicialmente a foto do Google
+        "foto_url": picture_google
     }
 
-    # upsert no Supabase
     supabase.table("perfis").upsert(profile_data, on_conflict="google_id").execute()
 
     res = supabase.table("perfis").select("nick, saldo, foto_url").eq("google_id", google_id).execute()
@@ -169,7 +166,6 @@ async def auth_google(request: Request, payload: AuthToken):
     saldo = row.get("saldo", 0.0) if row else 0.0
     foto_final = row.get("foto_url") if row and row.get("foto_url") else picture_google
 
-    # NOVO-02: corrigido retorno
     return {
         "status":    "authenticated",
         "google_id": google_id,
@@ -188,7 +184,6 @@ async def update_profile(
 ):
     perfil_json = json.loads(dados)
 
-    # Validação de idade
     data_nasc = perfil_json.get("dataNascimento")
     if data_nasc:
         born  = date.fromisoformat(data_nasc)
@@ -197,12 +192,10 @@ async def update_profile(
         if age < 18:
             raise HTTPException(status_code=400, detail="Usuário menor de idade.")
 
-    # Validação de CPF
     cpf_valor = perfil_json.get("cpf", "")
     if cpf_valor and not validar_cpf(cpf_valor):
         raise HTTPException(status_code=400, detail="CPF inválido.")
 
-    # Upload da foto para o Supabase Storage (NOVO-07)
     foto_url_atual = None
     if foto and foto.filename:
         EXTENSOES_PERMITIDAS = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
@@ -218,7 +211,7 @@ async def update_profile(
         foto_bytes = await foto.read()
         supabase.storage.from_("avatars").upload(
             bucket_path, foto_bytes,
-            file_options={"content-type": foto.content_type, "upsert": "true"}
+            file_options={"content-type": foto.content_type, "upsert": True}  # V3-09
         )
         foto_url_atual = supabase.storage.from_("avatars").get_public_url(bucket_path)
 
@@ -243,7 +236,6 @@ async def get_profile(google_id: str):
         return {}
     
     data = res_profile.data[0]
-    # NOVO-09: usar created_at em vez de data
     res_hist = supabase.table("historico").select("*").eq("google_id", google_id).order("created_at", desc=True).execute()
     data['historico'] = res_hist.data
     return data
@@ -252,12 +244,10 @@ async def get_profile(google_id: str):
 async def registrar_jogo(payload: RegistrarJogoPayload):
     partida_id = payload.partida_id or str(uuid.uuid4())
 
-    # Verifica se partida já existe
     res_check = supabase.table("historico").select("id").eq("partida_id", partida_id).execute()
     if res_check.data:
         return {"status": "already_registered", "partida_id": partida_id}
 
-    # Busca saldo
     res_user = supabase.table("perfis").select("saldo").eq("google_id", payload.googleId).execute()
     if not res_user.data:
         raise HTTPException(status_code=404, detail="Jogador não encontrado.")
@@ -271,7 +261,6 @@ async def registrar_jogo(payload: RegistrarJogoPayload):
         if saldo_atual + delta < 0:
             raise HTTPException(status_code=422, detail=f"Saldo insuficiente. R$ {saldo_atual:.2f}")
 
-    # Insere histórico
     supabase.table("historico").insert({
         "partida_id": partida_id,
         "google_id": payload.googleId,
@@ -281,7 +270,6 @@ async def registrar_jogo(payload: RegistrarJogoPayload):
         "delta_saldo": delta
     }).execute()
 
-    # Atualiza saldo
     if delta != 0.0:
         supabase.table("perfis").update({"saldo": saldo_atual + delta}).eq("google_id", payload.googleId).execute()
 
@@ -293,7 +281,7 @@ async def registrar_jogo(payload: RegistrarJogoPayload):
     }
 
 # ================================================================
-# ENGINE DE DAMAS (com correção da recursão - NOVO-05)
+# ENGINE DE DAMAS (com correção V3-01, V3-03, V3-06)
 # ================================================================
 def algebraic_to_index(coord: str) -> Tuple[int, int]:
     col = ord(coord[0].upper()) - ord('A')
@@ -316,36 +304,27 @@ class DamasEngine:
 
     @staticmethod
     def verificar_fim_de_jogo(tabuleiro: List[List[str]], regras: str) -> Optional[str]:
-        """
-        Retorna 'w' se as brancas venceram, 'b' se as pretas venceram, ou None se o jogo continua.
-        O jogo termina se um dos lados não tiver nenhuma peça OU não tiver nenhum movimento válido (captura ou andar).
-        """
         brancas_vivas = False
         pretas_vivas = False
         
-        # 1. Varredura rápida para ver se alguém ficou totalmente sem peças
         for linha in tabuleiro:
             for p in linha:
                 if p.lower() == 'w': brancas_vivas = True
                 if p.lower() == 'b': pretas_vivas = True
                 
-        if not brancas_vivas: return "b"  # Pretas ganham
-        if not pretas_vivas: return "w"   # Brancas ganham
+        if not brancas_vivas: return "b"
+        if not pretas_vivas: return "w"
 
-        # 2. Verificar se as Brancas têm movimentos ou capturas disponíveis
         brancas_tem_movimento = False
         for r in range(8):
             for c in range(8):
                 if tabuleiro[r][c].lower() == 'w':
-                    # Se tem captura obrigatória ou qualquer movimento válido, ela ainda joga
                     if DamasEngine.tem_capturas_obrigatorias_da_peca(tabuleiro, r, c, 'w', regras):
                         brancas_tem_movimento = True
                         break
-                    # Verifica também movimentos simples (passando continue_capture=False para testar passos)
                     for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
                         rt, ct = r + dr, c + dc
                         if 0 <= rt < 8 and 0 <= ct < 8:
-                            # Teste rápido se o motor aceita o movimento simples
                             sucesso, *_ = DamasEngine.validar_e_mover(tabuleiro, r, c, rt, ct, 'w', regras)
                             if sucesso:
                                 brancas_tem_movimento = True
@@ -354,7 +333,6 @@ class DamasEngine:
 
         if not brancas_tem_movimento: return "b"
 
-        # 3. Verificar se as Pretas (IA) têm movimentos ou capturas disponíveis
         pretas_tem_movimento = False
         for r in range(8):
             for c in range(8):
@@ -372,30 +350,24 @@ class DamasEngine:
             if pretas_tem_movimento: break
 
         if not pretas_tem_movimento: return "w"
-
-        return None  # O jogo segue normalmente
+        return None
 
     @staticmethod
     def tem_capturas_obrigatorias_da_peca(board: List[List[str]], r: int, c: int, cor: str, regras: str) -> bool:
-        """Verifica se uma peça específica tem alguma captura válida (respeitando a regra de não ir para trás)."""
-        """Verifica se uma peça específica tem alguma captura válida."""
         peca = board[r][c]
         if peca == '.' or peca.lower() != cor:
             return False
         is_dama = peca.isupper()
         direcoes = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
         for dr, dc in direcoes:
+            # V3-06: Removido bloqueio de direção para peças comuns
             if not is_dama:
-                # Peça normal não move nem captura para trás conforme solicitado
-                if cor == 'w' and dr >= 0: continue
-                if cor == 'b' and dr <= 0: continue
                 rm, cm = r + dr, c + dc
                 rt, ct = r + 2*dr, c + 2*dc
                 if 0 <= rt < 8 and 0 <= ct < 8:
                     if board[rm][cm] != '.' and board[rm][cm].lower() != cor and board[rt][ct] == '.':
                         return True
             else:
-                # Lógica para Damas
                 if regras == "americana":
                     rm, cm = r + dr, c + dc
                     rt, ct = r + 2*dr, c + 2*dc
@@ -410,8 +382,8 @@ class DamasEngine:
                             if found_enemy: return True
                         elif board[nr][nc].lower() == cor:
                             break
-                        else: # inimiga
-                            if found_enemy: break # bloqueado por 2ª peça
+                        else:
+                            if found_enemy: break
                             found_enemy = True
                         nr += dr
                         nc += dc
@@ -419,7 +391,6 @@ class DamasEngine:
 
     @staticmethod
     def jogador_tem_capturas_possiveis(board: List[List[str]], cor: str, regras: str) -> bool:
-        """Varre todo o tabuleiro para ver se o jogador tem qualquer captura obrigatória disponível."""
         for r in range(8):
             for c in range(8):
                 if DamasEngine.tem_capturas_obrigatorias_da_peca(board, r, c, cor, regras):
@@ -455,7 +426,6 @@ class DamasEngine:
                             if 0 <= nr < 8 and 0 <= nc < 8:
                                 candidatos.add((nr, nc))
                 for nr, nc in candidatos:
-                    # NOVO-05: passa continue_capture=True para evitar recursão infinita
                     ok, _, _ = DamasEngine.validar_e_mover(board, r, c, nr, nc, player, regras, continue_capture=True)
                     if ok:
                         mov = ((r, c), (nr, nc))
@@ -521,72 +491,36 @@ class DamasEngine:
         dc = c_to - c_from
 
         if peca in ['w', 'b']:
-            # 1. Bloqueio de direção (Não pode andar E não pode comer para trás)
-            if peca == 'w' and dr >= 0:
-                return False, board, "Peças brancas comuns só movem para a frente (linhas menores)"
-            if peca == 'b' and dr <= 0:
-                return False, board, "Peças pretas comuns só movem para a frente (linhas maiores)"
-
-            # 1. MOVIMENTO SIMPLES (Andar 1 casa nas diagonais)
+            # V3-06: Restrição de direção removida daqui (será aplicada apenas no movimento simples)
+            # Movimento simples
             if abs(dr) == 1 and abs(dc) == 1:
-                if continue_capture: # Se veio de uma captura combo, não pode apenas andar
                 if continue_capture:
-                    return False, board, "Precisa continuar capturando"
-
-                # REGRA 2: Bloqueio de direção apenas para passos normais
-                if peca == 'w' and dr >= 0:
-                    return False, board, "Peças brancas comuns só andam para a frente"
-                if peca == 'b' and dr <= 0:
-                    return False, board, "Peças pretas comuns só andam para a frente"
-
+                    return False, board, "Precisa continuar capturando."
+                # Aplica restrição de direção apenas para passos normais (não capturas)
+                if regras == "americana":
+                    if peca == 'w' and dr >= 0:
+                        return False, board, "Peças brancas comuns só andam para frente."
+                    if peca == 'b' and dr <= 0:
+                        return False, board, "Peças pretas comuns só andam para frente."
                 nb = [row[:] for row in board]
                 nb[r_from][c_from] = "."
-                nb[r_to][c_to] = peca
-                if (player == "w" and r_to == 0) or (player == "b" and r_to == 7):
-                    nb[r_to][c_to] = player.upper()
                 nb[r_to][c_to] = 'W' if (peca == 'w' and r_to == 0) else ('B' if (peca == 'b' and r_to == 7) else peca)
                 return True, nb, "OK"
+            # Captura
             elif abs(dr) == 2 and abs(dc) == 2:
                 rm, cm = r_from + dr//2, c_from + dc//2
                 pc = board[rm][cm]
                 if pc == "." or pc.lower() == player:
                     return False, board, "Não há peça adversária para capturar."
-
                 nb = [row[:] for row in board]
                 nb[r_from][c_from] = "."
                 nb[rm][cm] = "."
-                nb[r_to][c_to] = peca
-                if (player == "w" and r_to == 0) or (player == "b" and r_to == 7):
-                    nb[r_to][c_to] = player.upper()
-            # 2. CAPTURA SIMPLES (Pular 2 casas) - Aqui PODE ir para trás!
-            if abs(dr) == 2 and abs(dc) == 2:
-                rm, cm = (r_from + r_to) // 2, (c_from + c_to) // 2
-                pc_meio = board[rm][cm]
-
-                # Verifica se essa peça que acabou de mover ainda tem capturas válidas
-                if DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
+                nb[r_to][c_to] = 'W' if (peca == 'w' and r_to == 0) else ('B' if (peca == 'b' and r_to == 7) else peca)
+                # Verifica se pode continuar capturando
+                if not continue_capture and DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
                     return True, nb, "MULTI_CAPTURE"
                 return True, nb, "OK"
-                # Verifica se tem uma peça inimiga no meio para comer
-                if pc_meio != '.' and pc_meio.lower() != player:
-                    nb = [row[:] for row in board]
-                    nb[r_from][c_from] = "."
-                    nb[rm][cm] = "."  # Remove a peça comida
-
-                    # Promoção a Dama se terminar na última fileira
-                    if peca == 'w' and r_to == 0:
-                        nb[r_to][c_to] = 'W'
-                    elif peca == 'b' and r_to == 7:
-                        nb[r_to][c_to] = 'B'
-                    else:
-                        nb[r_to][c_to] = peca
-
-                    # Verifica combo
-                    if DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
-                        return True, nb, "MULTI_CAPTURE"
-                    return True, nb, "OK"
-
-            return False, board, "Movimento inválido"
+            return False, board, "Movimento inválido."
 
         elif peca in ['W', 'B']:
             if abs(dr) != abs(dc):
@@ -607,8 +541,8 @@ class DamasEngine:
                         nb[r_from][c_from] = "."
                         nb[rm][cm] = "."
                         nb[r_to][c_to] = peca
-                        if DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
-                             return True, nb, "MULTI_CAPTURE"
+                        if not continue_capture and DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
+                            return True, nb, "MULTI_CAPTURE"
                         return True, nb, "OK"
                 return False, board, "Dama americana só move curto alcance."
 
@@ -633,16 +567,15 @@ class DamasEngine:
                     nb[r_from][c_from] = "."
                     nb[rcap][ccap] = "."
                     nb[r_to][c_to] = peca
-                    if not continue_capture:
-                        if DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
-                            return True, nb, "MULTI_CAPTURE"
+                    if not continue_capture and DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
+                        return True, nb, "MULTI_CAPTURE"
                     return True, nb, "OK"
                 else:
                     return False, board, "Múltiplas peças no caminho."
         return False, board, "Movimento não suportado."
 
 # ================================================================
-# GERENCIADOR DE SALAS E WEBSOCKETS (inalterado, exceto chamadas com continue_capture)
+# GERENCIADOR DE SALAS E WEBSOCKETS
 # ================================================================
 class GerenciadorSalas:
     def __init__(self):
@@ -691,7 +624,6 @@ async def websocket_endpoint(websocket: WebSocket, game_id: str, player_color: s
                 rf, cf = algebraic_to_index(msg["from"])
                 rt, ct = algebraic_to_index(msg["to"])
 
-                # ---- VALIDAÇÃO DE CAPTURA OBRIGATÓRIA ----
                 tem_que_comer = DamasEngine.jogador_tem_capturas_possiveis(partida["board"], player_color, partida["regras"])
                 movimento_eh_captura = abs(rf - rt) >= 2
                 if tem_que_comer and not movimento_eh_captura:
@@ -700,7 +632,6 @@ async def websocket_endpoint(websocket: WebSocket, game_id: str, player_color: s
                         "message": "Movimento inválido! Você é obrigado a capturar uma peça adversária."
                     }))
                     continue
-                # ------------------------------------------
 
                 ok, nb, motivo = DamasEngine.validar_e_mover(
                     partida["board"], rf, cf, rt, ct, player_color, partida["regras"])
@@ -757,11 +688,11 @@ async def websocket_ia_endpoint(websocket: WebSocket, game_id: str):
                     "type": "update", "board": p["board"], "turn": p["turn"], "regras": p["regras"]
                 }))
                 continue
-            elif msg.get("type") == "move":
+            # V3-08: verifica turno
+            elif msg.get("type") == "move" and p["turn"] == "w":
                 irf, icf = algebraic_to_index(msg["from"])
                 irt, ict = algebraic_to_index(msg["to"])
                 
-                # 1. VALIDAÇÃO DO JOGADOR (BRANCAS)
                 tem_que_comer_w = DamasEngine.jogador_tem_capturas_possiveis(p["board"], "w", p["regras"])
                 movimento_eh_captura_w = abs(irf - irt) >= 2
                 
@@ -772,12 +703,12 @@ async def websocket_ia_endpoint(websocket: WebSocket, game_id: str):
                     }))
                     continue
                     
-                sucesso, resultado_ou_motivo, mais_capturas = DamasEngine.validar_e_mover(
+                sucesso, novo_board, motivo = DamasEngine.validar_e_mover(
                     p["board"], irf, icf, irt, ict, "w", p["regras"]
                 )
                 
                 if sucesso:
-                    p["board"] = resultado_ou_motivo
+                    p["board"] = novo_board
                     venc = DamasEngine.verificar_fim_de_jogo(p["board"], p["regras"])
                     
                     if venc:
@@ -786,39 +717,29 @@ async def websocket_ia_endpoint(websocket: WebSocket, game_id: str):
                         }))
                         continue
                     
-                    # Se o jogador capturou e ainda pode continuar no combo, mantém o turno dele
-                    if mais_capturas and movimento_eh_captura_w:
+                    # V3-05: comparação correta com "MULTI_CAPTURE"
+                    if motivo == "MULTI_CAPTURE" and movimento_eh_captura_w:
                         await websocket.send_text(json.dumps({
-                            "type": "update", "board": p["board"], "turn": "w", "regras": p["regras"]
+                            "type": "update", "board": p["board"], "turn": "w", "regras": p["regras"],
+                            "must_continue": True, "piece": [irt, ict]
                         }))
                     else:
-                        # PASSA O TURNO PARA A IA (PRETAS)
+                        # Passa turno para a IA
                         p["turn"] = "b"
                         await websocket.send_text(json.dumps({
                             "type": "update", "board": p["board"], "turn": "b", "regras": p["regras"]
                         }))
                         
-                        # Delay para dar sensação de pensamento da IA
                         await asyncio.sleep(0.5)
                         
-                        # 2. DECISÃO DA IA (PRETAS)
-                        # Primeiro, verifica se a IA tem alguma captura obrigatória
-                        jogadas_ia = DamasEngine.obter_capturas_possiveis_do_jogador(p["board"], "b", p["regras"])
+                        # V3-04: Usa minimax corretamente
+                        _, mov = DamasEngine.minimax(p["board"], 4, -float('inf'), float('inf'), True, p["regras"])
+                        if mov:
+                            (irf_b, icf_b), (irt_b, ict_b) = mov
+                            _, p["board"], _ = DamasEngine.validar_e_mover(
+                                p["board"], irf_b, icf_b, irt_b, ict_b, "b", p["regras"], continue_capture=True
+                            )
                         
-                        # Se não tiver nenhuma captura obrigatória, ela pode andar para a frente
-                        if not jogadas_ia:
-                            jogadas_ia = DamasEngine.obter_movimentos_simples_do_jogador(p["board"], "b", p["regras"])
-                        
-                        if jogadas_ia:
-                            # Escolhe uma jogada válida (pode usar random para testar rápido ou integrar com o minimax)
-                            # Para garantir que ela mexe agora mesmo, vamos pegar uma jogada válida direta:
-                            mov_escolhido = random.choice(jogadas_ia)
-                            
-                            (irf_b, icf_b), (irt_b, ict_b) = mov_escolhido
-                            _, novo_tabuleiro_b, _ = DamasEngine.validar_e_mover(p["board"], irf_b, icf_b, irt_b, ict_b, "b", p["regras"])
-                            p["board"] = novo_tabuleiro_b
-                        
-                        # Devolve o turno para as Brancas
                         p["turn"] = "w"
                         venc = DamasEngine.verificar_fim_de_jogo(p["board"], p["regras"])
                         
@@ -831,7 +752,7 @@ async def websocket_ia_endpoint(websocket: WebSocket, game_id: str):
                                 "type": "update", "board": p["board"], "turn": "w", "regras": p["regras"]
                             }))
                 else:
-                    await websocket.send_text(json.dumps({"type": "invalid_move", "message": resultado_ou_motivo}))
+                    await websocket.send_text(json.dumps({"type": "invalid_move", "message": novo_board}))
     except WebSocketDisconnect:
         pass
 
