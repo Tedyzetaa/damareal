@@ -727,14 +727,44 @@ async def websocket_ia_endpoint(websocket: WebSocket, game_id: str):
                         
                         await asyncio.sleep(0.5)
                         
-                        # V3-04: Usa minimax corretamente
+                        # ============================================================
+                        # TURNO DA IA (PRETAS) CORRIGIDO
+                        # ============================================================
                         _, mov = DamasEngine.minimax(p["board"], 4, -float('inf'), float('inf'), True, p["regras"])
                         if mov:
                             (irf_b, icf_b), (irt_b, ict_b) = mov
-                            _, p["board"], _ = DamasEngine.validar_e_mover(
-                                p["board"], irf_b, icf_b, irt_b, ict_b, "b", p["regras"], continue_capture=True
+                            
+                            # CORREÇÃO CRÍTICA: Começa com continue_capture=False para permitir passos normais!
+                            sucesso_b, novo_board_b, tem_combo_b = DamasEngine.validar_e_mover(
+                                p["board"], irf_b, icf_b, irt_b, ict_b, "b", p["regras"], continue_capture=False
                             )
+                            
+                            if sucesso_b:
+                                p["board"] = novo_board_b
+                                
+                                # LOOP DE COMBO AUTOMÁTICO: Se a IA capturar e puder continuar a comer, ela continua!
+                                while tem_combo_b:
+                                    # Pequeno intervalo entre os saltos para o utilizador ver a animação acontecer
+                                    await asyncio.sleep(0.4)
+                                    await websocket.send_text(json.dumps({
+                                        "type": "update", "board": p["board"], "turn": "b", "regras": p["regras"]
+                                    }))
+                                    
+                                    # Varre os próximos movimentos válidos para encontrar a continuação do combo
+                                    proximos_movs = DamasEngine.obter_todos_movimentos_validos(p["board"], "b", p["regras"])
+                                    combos_da_peca = [m for m in proximos_movs if m[0] == (irt_b, ict_b)]
+                                    
+                                    if combos_da_peca:
+                                        mov_combo = combos_da_peca[0]
+                                        (irf_b, icf_b), (irt_b, ict_b) = mov_combo
+                                        # Aqui sim, passamos continue_capture=True porque é a sequência do combo
+                                        _, p["board"], tem_combo_b = DamasEngine.validar_e_mover(
+                                            p["board"], irf_b, icf_b, irt_b, ict_b, "b", p["regras"], continue_capture=True
+                                        )
+                                    else:
+                                        break
                         
+                        # Passa o turno de volta para o jogador humano
                         p["turn"] = "w"
                         venc = DamasEngine.verificar_fim_de_jogo(p["board"], p["regras"])
                         
