@@ -11,6 +11,7 @@ let capturedByWhite = 0;
 let capturedByBlack = 0;
 let partidaIdAtual    = null;
 let partidaRegistrada = false;
+let minhaCorAtual   = 'w';   // BUG-07: estado global da cor
 
 let userProfile = {
     googleId:      null,
@@ -23,7 +24,10 @@ let userProfile = {
 };
 
 let historicoJogos = [];
-const API = 'http://localhost:6500';
+// BUG-01: API dinâmica conforme ambiente
+const API = window.location.hostname === 'localhost'
+    ? 'http://localhost:6500'
+    : 'https://damareal1-2ml7.onrender.com';
 
 // ============================================================
 // TOAST
@@ -39,6 +43,26 @@ function showToast(msg, type = 'info', duration = 3500) {
         el.style.animation = 'toastOut 0.3s cubic-bezier(0.22,1,0.36,1) forwards';
         setTimeout(() => el.remove(), 300);
     }, duration);
+}
+
+// ============================================================
+// HEALTH CHECK (MELHORIA-01)
+// ============================================================
+async function healthCheck() {
+    showToast('Conectando ao servidor (pode levar ~30s)...', 'info', 8000);
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 60000);
+        const res = await fetch(`${API}/health`, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (res.ok) {
+            showToast('Servidor pronto!', 'success', 2000);
+        } else {
+            showToast('Servidor retornou erro. Tente novamente.', 'error');
+        }
+    } catch (e) {
+        showToast('Servidor demorou para responder. Tente novamente.', 'error');
+    }
 }
 
 // ============================================================
@@ -101,12 +125,12 @@ function renderBoard() {
 }
 
 // ============================================================
-// CLIQUE NO TABULEIRO
+// CLIQUE NO TABULEIRO (BUG-07 corrigido)
 // ============================================================
 function handleSquareClick(r, c) {
     if (!meuTurno) return;
-    const peca    = currentBoard[r] ? currentBoard[r][c] : '.';
-    const minhaCor = document.getElementById('playerColor').value;
+    const peca = currentBoard[r] ? currentBoard[r][c] : '.';
+    const minhaCor = minhaCorAtual;  // usa estado global
     if (!selectedSquare) {
         if (peca !== '.' && peca.toLowerCase() === minhaCor) {
             selectedSquare = { row: r, col: c };
@@ -168,7 +192,7 @@ function renderCaptureDots() {
 }
 
 // ============================================================
-// STATUS / INDICADOR
+// STATUS / INDICADOR (MELHORIA-07)
 // ============================================================
 function atualizarStatus(turno, ehMeuTurno, modo) {
     const ind  = document.getElementById('turnIndicator');
@@ -186,7 +210,7 @@ function atualizarStatus(turno, ehMeuTurno, modo) {
 }
 
 // ============================================================
-// WEBSOCKET HELPERS
+// WEBSOCKET HELPERS (inclui onclose BUG-08)
 // ============================================================
 function onMensagemServidor(data, minhaCor) {
     if (data.type === 'init' || data.type === 'update') {
@@ -196,9 +220,16 @@ function onMensagemServidor(data, minhaCor) {
         lastBoard    = currentBoard.map(r => [...r]);
         currentBoard = data.board;
         meuTurno     = (data.turn === minhaCor);
-        atualizarStatus(data.turn, meuTurno, modoAtual);
+        // Ordem correta: renderBoard primeiro, depois status (MELHORIA-07)
         renderBoard();
+        atualizarStatus(data.turn, meuTurno, modoAtual);
         if (data.alerta) showToast(data.alerta, 'info');
+        if (data.must_continue) {
+            showToast('Captura múltipla! Continue movendo a mesma peça.', 'info', 3000);
+            // Opcional: destacar a peça que deve continuar
+            selectedSquare = { row: data.piece[0], col: data.piece[1] };
+            renderBoard();
+        }
     } else if (data.type === 'invalid_move' || data.type === 'error') {
         showToast(data.message, 'error');
         selectedSquare = null;
@@ -219,8 +250,13 @@ function onMensagemServidor(data, minhaCor) {
 // JOGAR CONTRA IA
 // ============================================================
 function jogarContraIA() {
-    modoAtual = 'ia'; capturedByWhite = 0; capturedByBlack = 0;
-    lastBoard = null; partidaIdAtual = null; partidaRegistrada = false;
+    modoAtual = 'ia';
+    capturedByWhite = 0;
+    capturedByBlack = 0;
+    lastBoard = null;
+    partidaIdAtual = null;
+    partidaRegistrada = false;
+    minhaCorAtual = 'w';   // BUG-07
     document.getElementById('playerColor').value = 'w';
     if (ws) ws.close();
     const gameId = 'ia_room_' + Math.floor(Math.random() * 99999);
@@ -228,6 +264,13 @@ function jogarContraIA() {
     ws = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/ia/${gameId}`);
     ws.onopen    = () => { mudarTela('screenGame'); renderizarCoordenadas(); renderCaptureDots(); showToast('Conectado! Boa sorte.', 'success'); };
     ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), 'w');
+    // BUG-08: handler onclose
+    ws.onclose = (event) => {
+        if (event.code !== 1000) {
+            showToast('Conexão com o servidor perdida. Tente novamente.', 'error', 5000);
+            mudarTela('screenMenu');
+        }
+    };
     ws.onerror   = ()  => showToast('Erro de conexão com o servidor.', 'error');
 }
 
@@ -249,11 +292,18 @@ function conectarServidor() {
     if (!gameId) { showToast('Informe o ID da sala.', 'error'); return; }
     capturedByWhite = 0; capturedByBlack = 0; lastBoard = null;
     partidaIdAtual = null; partidaRegistrada = false;
+    minhaCorAtual = color;   // BUG-07
     if (ws) ws.close();
     const wsProtocol = API.startsWith('https') ? 'wss' : 'ws';
     ws = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/partida/${gameId}/${color}`);
     ws.onopen    = () => { mudarTela('screenGame'); renderizarCoordenadas(); renderCaptureDots(); ws.send(JSON.stringify({ type: 'config_rules', regras: rules })); showToast('Conectado!', 'success'); };
     ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), color);
+    ws.onclose   = (event) => {
+        if (event.code !== 1000) {
+            showToast('Conexão com o servidor perdida. Tente novamente.', 'error', 5000);
+            mudarTela('screenMenu');
+        }
+    };
     ws.onerror   = ()  => showToast('Falha ao conectar com o servidor.', 'error');
 }
 function mudarRegras(novaRegra) {
@@ -281,7 +331,7 @@ function confirmarAbandono() {
 }
 function abandonarPartida() {
     document.querySelectorAll('.modal-overlay').forEach(m => m.remove());
-    if (ws) ws.close();
+    if (ws) ws.close(1000, 'Abandono voluntário');
     mudarTela('screenMenu');
 }
 
@@ -317,15 +367,17 @@ function fecharModal() {
 }
 
 // ============================================================
-// REGISTRAR JOGO NO BACKEND
+// REGISTRAR JOGO NO BACKEND (tipo normalizado)
 // ============================================================
 async function registrarJogoNoServidor(resultado, valorAposta = 0) {
     if (!userProfile.googleId) return;
     if (partidaRegistrada) return;
     partidaRegistrada = true;
+    let tipoEnvio = modoAtual || 'online';
+    if (tipoEnvio === 'apostada') tipoEnvio = 'aposta';   // BUG-05 normalizado
     const payload = {
         googleId:   userProfile.googleId,
-        tipo:       modoAtual || 'online',
+        tipo:       tipoEnvio,
         resultado,
         valor:      valorAposta,
         partida_id: partidaIdAtual
@@ -364,10 +416,6 @@ function inicializarBotaoGoogle() {
     google.accounts.id.initialize({
         client_id:              CONFIG.GOOGLE_CLIENT_ID,
         callback:               handleCredentialResponse,
-        // ── BUG CORRIGIDO #4 — sem auto_select, o usuário tinha que
-        //    clicar em "fazer login" toda vez que recarregava a página.
-        //    Com auto_select: true, o Google reusa o último login se
-        //    o usuário já tinha autenticado antes.
         auto_select:            true,
         cancel_on_tap_outside:  false,
     });
@@ -375,13 +423,7 @@ function inicializarBotaoGoogle() {
         document.getElementById('googleBtnContainer'),
         { theme: 'filled_black', size: 'medium', type: 'standard', shape: 'pill', width: 200 }
     );
-
-    // ── BUG CORRIGIDO #5 — sem prompt(), o auto_select nunca dispara.
-    //    O prompt() tenta fazer login silencioso imediatamente ao carregar.
-    //    Se o usuário já tinha sessão, handleCredentialResponse é chamado
-    //    automaticamente sem nenhum clique.
     google.accounts.id.prompt((notification) => {
-        // Se o prompt foi dispensado ou falhou, mostra o botão normalmente
         if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
             console.info('Auto-login não disponível, exibindo botão.');
         }
@@ -390,43 +432,28 @@ function inicializarBotaoGoogle() {
 
 async function handleCredentialResponse(response) {
     try {
-        // Salva o token para reuso (ex: refresh token flows futuros)
         sessionStorage.setItem('dr_credential', response.credential);
-
         const res = await fetch(`${API}/auth/google`, {
             method:  'POST',
             headers: { 'Content-Type': 'application/json' },
             body:    JSON.stringify({ token: response.credential })
         });
-
         if (!res.ok) {
             showToast('Erro ao validar credenciais do Google.', 'error');
             return;
         }
-
         const userData = await res.json();
-
-        // ── BUG CORRIGIDO #6 — userProfile.googleId era definido pelo
-        //    JWT local (payload.sub) antes da resposta do servidor.
-        //    Agora usamos o google_id retornado pelo servidor, garantindo
-        //    que o ID está alinhado com o registro no banco.
         userProfile.googleId = userData.google_id;
-
-        // Atualiza a barra de autenticação
         document.getElementById('googleBtnContainer').style.display = 'none';
         const ui = document.getElementById('userInfo');
         ui.style.display = 'flex';
-
-        // Mostra nick salvo se existir, senão o nome do Google
         const nomeExibido = userData.nick || userData.name;
         document.getElementById('userName').textContent = nomeExibido;
         document.getElementById('userPicture').src      = userData.picture;
-
         showToast(`Bem-vindo, ${nomeExibido}!`, 'success');
-
-        // Carrega perfil completo do banco (campos do formulário + histórico)
         await carregarPerfilDoServidor(userData.google_id);
-
+        // Health check após login (MELHORIA-01)
+        await healthCheck();
     } catch (err) {
         showToast('Não foi possível comunicar com o servidor.', 'error');
         console.error(err);
@@ -435,7 +462,6 @@ async function handleCredentialResponse(response) {
 
 // ============================================================
 // CARREGAR PERFIL DO SERVIDOR
-// Sincroniza todos os campos do formulário + histórico + foto
 // ============================================================
 async function carregarPerfilDoServidor(googleId) {
     if (!googleId) return;
@@ -443,36 +469,23 @@ async function carregarPerfilDoServidor(googleId) {
         const res = await fetch(`${API}/get-profile/${googleId}`);
         if (!res.ok) return;
         const data = await res.json();
-
-        // Preenche campos do formulário com dados do banco
         const campos = { nick: 'nick', bio: 'bio', telefone: 'telefone', cpf: 'cpf', data_nasc: 'dataNascimento' };
         Object.entries(campos).forEach(([chave, id]) => {
             const el = document.getElementById(id);
             if (el && data[chave]) el.value = data[chave];
         });
-
-        // Atualiza objeto de estado local
         userProfile.nick           = data.nick          || '';
         userProfile.bio            = data.bio           || '';
         userProfile.telefone       = data.telefone      || '';
         userProfile.cpf            = data.cpf           || '';
         userProfile.dataNascimento = data.data_nasc     || '';
-
-        // Atualiza nick no header se estiver salvo no banco
         if (data.nick) {
             document.getElementById('userName').textContent = data.nick;
         }
-
-        // ── BUG CORRIGIDO: foto_path era um caminho do servidor (ex: "uploads/123.jpg")
-        //    que o front tentava usar direto como src de <img> — isso não funciona.
-        //    Agora o backend retorna foto_url (http://localhost:6500/uploads/...)
-        //    graças ao StaticFiles montado no servidor.
         if (data.foto_url) {
             document.getElementById('previewFoto').src = data.foto_url;
             document.getElementById('userPicture').src = data.foto_url;
         }
-
-        // Popula histórico com dados reais do banco
         historicoJogos = (data.historico || []).map(h => ({
             tipo:      h.tipo,
             resultado: h.resultado,
@@ -480,7 +493,6 @@ async function carregarPerfilDoServidor(googleId) {
             data:      new Date(h.data).toLocaleDateString('pt-BR')
         }));
         renderHistorico();
-
     } catch (e) {
         console.warn('Não foi possível carregar o perfil:', e);
     }
@@ -489,13 +501,11 @@ async function carregarPerfilDoServidor(googleId) {
 function executarLogout() {
     google.accounts.id.disableAutoSelect();
     sessionStorage.removeItem('dr_credential');
-
     userProfile = {
         googleId: null, nick: "", bio: "", telefone: "", cpf: "", dataNascimento: "",
         privacidade: { telefone: false, cpf: false }
     };
     historicoJogos = [];
-
     ['nick','bio','telefone','cpf','dataNascimento'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.value = '';
@@ -550,9 +560,11 @@ function verificarIdade(dataNasc) {
     return idade >= 18;
 }
 
+// MELHORIA-08: togglePrivacy corrigido
 function togglePrivacy(campo) {
     userProfile.privacidade[campo] = !userProfile.privacidade[campo];
-    showToast(`${campo} agora está ${userProfile.privacidade[campo] ? 'Público' : 'Privado'}`, 'info');
+    const estado = userProfile.privacidade[campo] ? 'Privado' : 'Público';
+    showToast(`${campo} agora está ${estado}`, 'info');
 }
 
 function previewImagem(event) {
@@ -563,54 +575,41 @@ function previewImagem(event) {
 
 async function salvarPerfil(event) {
     if (event) event.preventDefault();
-
     if (!userProfile.googleId) {
         showToast('Você precisa estar logado para salvar o perfil.', 'error');
         return;
     }
-
     const dataNasc = document.getElementById('dataNascimento').value;
     if (dataNasc && !verificarIdade(dataNasc)) {
         showToast('Você precisa ter 18 anos ou mais.', 'error');
         return;
     }
-
     const cpfValor = document.getElementById('cpf').value;
     if (cpfValor && !validarCPF(cpfValor)) {
         showToast('CPF inválido. Verifique os dígitos.', 'error');
         return;
     }
-
-    // Atualiza estado local
     userProfile.nick           = document.getElementById('nick').value;
     userProfile.bio            = document.getElementById('bio').value;
     userProfile.telefone       = document.getElementById('telefone').value;
     userProfile.cpf            = cpfValor;
     userProfile.dataNascimento = dataNasc;
-
-    // Feedback visual: desabilita botão durante o envio
     const btn = document.querySelector('#perfil-container .btn-primary');
     if (btn) { btn.disabled = true; btn.textContent = 'Salvando...'; }
-
     const formData = new FormData();
     const fileInput = document.getElementById('inputFoto');
     if (fileInput.files.length > 0)
         formData.append('foto', fileInput.files[0]);
     formData.append('googleId', userProfile.googleId);
     formData.append('dados', JSON.stringify(userProfile));
-
     try {
         const res = await fetch(`${API}/update-profile`, { method: 'POST', body: formData });
         if (res.ok) {
             const data = await res.json();
             showToast('Perfil atualizado com sucesso!', 'success');
-
-            // Atualiza nick no header imediatamente
             if (userProfile.nick) {
                 document.getElementById('userName').textContent = userProfile.nick;
             }
-
-            // Atualiza foto no header se o servidor devolveu URL
             if (data.foto_url) {
                 document.getElementById('userPicture').src = data.foto_url;
             }

@@ -2,58 +2,73 @@ import asyncio
 import json
 import os
 import random
+import re
 import shutil
 import sqlite3
 import uuid
 from contextlib import contextmanager
 from datetime import date
 from typing import Dict, List, Optional, Tuple
-
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, File, UploadFile, Form
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles          # ← NOVO: serve fotos de perfil
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, validator
 from google.oauth2 import id_token
-from google.auth.transport import requests
+from google.auth.transport import requests as google_requests
 from dotenv import load_dotenv
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 load_dotenv()
 
 app = FastAPI(title="Damas Real - Server-Side Engine com IA")
 
+# ================================================================
+# CONFIGURAÇÕES DE AMBIENTE
+# ================================================================
+BASE_URL = os.environ.get("BASE_URL", "http://localhost:6500")
+DB_PATH = os.environ.get("DB_PATH", "damas_real.db")
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Serve a pasta de uploads como rota estática
-# → Foto acessível em: http://localhost:6500/uploads/<nome_do_arquivo>
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
+# ================================================================
+# RATE LIMITING
+# ================================================================
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ================================================================
-# BUG CRÍTICO CORRIGIDO #1 — isolation_level=None + conn.commit()
-#
-# PROBLEMA ORIGINAL:
-#   conn = sqlite3.connect('...', isolation_level=None)
-#   → isolation_level=None = modo autocommit
-#   → conn.commit() e conn.rollback() são NO-OPS silenciosos
-#   → os dados nunca eram gravados no banco
-#
-# SOLUÇÃO:
-#   Remover isolation_level=None.
-#   Com isolation_level padrão (""), o Python gerencia BEGIN/COMMIT.
-#   Para transações exclusivas (apostas), usamos conn.execute("BEGIN IMMEDIATE")
-#   e depois conn.commit() / conn.rollback() normalmente.
+# CORS (inclui domínio do Render)
+# ================================================================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5500",
+        "http://localhost:5500",
+        "http://127.0.0.1:5501",
+        "http://localhost:5501",
+        "https://damareal1-2ml7.onrender.com",
+        "https://damareal1.vercel.app",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ================================================================
+# BANCO DE DADOS (com suporte a DB_PATH via env)
 # ================================================================
 @contextmanager
 def get_db():
-    """
-    Context manager para conexões SQLite com isolamento correto.
-    isolation_level padrão ativa o gerenciamento de transações do Python:
-    conn.commit() e conn.rollback() funcionam corretamente.
-    """
-    conn = sqlite3.connect('damas_real.db')   # isolation_level padrão
+    """Conexão padrão com gerenciamento de transação automático."""
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")    # leituras concorrentes
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     try:
         yield conn
@@ -63,6 +78,17 @@ def get_db():
     finally:
         conn.close()
 
+@contextmanager
+def get_db_exclusive():
+    """Conexão com autocommit para controle manual (apostas)."""
+    conn = sqlite3.connect(DB_PATH, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 def setup_db():
     with get_db() as conn:
@@ -93,16 +119,11 @@ def setup_db():
                 FOREIGN KEY (google_id) REFERENCES perfis(google_id)
             );
         """)
-        # Migração segura: adiciona colunas novas se o banco já existia
         _migrar_colunas(conn)
         conn.commit()
 
-
 def _migrar_colunas(conn):
-    """Adiciona colunas sem quebrar bancos existentes."""
-    colunas_existentes = {
-        row[1] for row in conn.execute("PRAGMA table_info(perfis)")
-    }
+    colunas_existentes = {row[1] for row in conn.execute("PRAGMA table_info(perfis)")}
     novas = {
         "nome":     "ALTER TABLE perfis ADD COLUMN nome TEXT",
         "email":    "ALTER TABLE perfis ADD COLUMN email TEXT",
@@ -113,41 +134,29 @@ def _migrar_colunas(conn):
         if col not in colunas_existentes:
             conn.execute(sql)
 
-
 setup_db()
 
-
 # ================================================================
-# BUG CORRIGIDO #2 — CORS bloqueando localhost vs 127.0.0.1
-#
-# PROBLEMA ORIGINAL:
-#   allow_origins=["http://127.0.0.1:5500"]
-#   → Se o navegador abre localhost:5500 (diferente de 127.0.0.1:5500),
-#     o CORS bloqueia todas as requisições silenciosamente.
+# VALIDAÇÕES
 # ================================================================
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:5500",
-        "http://localhost:5500",
-        "http://127.0.0.1:5501",
-        "http://localhost:5501",
-        "https://damareal1.vercel.app",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
-
+def validar_cpf(cpf: str) -> bool:
+    cpf = re.sub(r'[^\d]', '', cpf)
+    if len(cpf) != 11 or cpf == cpf[0] * 11:
+        return False
+    for i in range(9, 11):
+        soma = sum(int(cpf[j]) * (i + 1 - j) for j in range(i))
+        resto = (soma * 10) % 11
+        if resto in (10, 11):
+            resto = 0
+        if resto != int(cpf[i]):
+            return False
+    return True
 
 # ================================================================
 # MODELOS PYDANTIC
 # ================================================================
 class AuthToken(BaseModel):
     token: str
-
 
 class RegistrarJogoPayload(BaseModel):
     googleId:   str
@@ -158,9 +167,10 @@ class RegistrarJogoPayload(BaseModel):
 
     @validator('tipo')
     def tipo_valido(cls, v):
-        if v not in ('ia', 'online', 'aposta'):
-            raise ValueError("tipo deve ser 'ia', 'online' ou 'aposta'")
-        return v
+        # Aceita 'apostada' também (frontend) e normaliza internamente
+        if v not in ('ia', 'online', 'aposta', 'apostada'):
+            raise ValueError("tipo deve ser 'ia', 'online', 'aposta' ou 'apostada'")
+        return 'aposta' if v == 'apostada' else v
 
     @validator('resultado')
     def resultado_valido(cls, v):
@@ -168,25 +178,20 @@ class RegistrarJogoPayload(BaseModel):
             raise ValueError("resultado deve ser 'vitoria', 'derrota' ou 'empate'")
         return v
 
+# ================================================================
+# ENDPOINTS
+# ================================================================
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
-# ================================================================
-# AUTH
-# BUG CORRIGIDO #3 — login não devolvia nick/saldo armazenados
-#
-# PROBLEMA ORIGINAL:
-#   O endpoint retornava apenas dados do token Google (nome/foto/email).
-#   Nick e saldo salvos no banco eram ignorados — a UI mostrava
-#   sempre o nome do Google, nunca o apelido personalizado.
-#
-# SOLUÇÃO:
-#   Após o upsert, busca o perfil completo do banco e mescla os dados.
-# ================================================================
 @app.post("/auth/google")
-async def auth_google(payload: AuthToken):
+@limiter.limit("10/minute")
+async def auth_google(request: Request, payload: AuthToken):
     try:
         id_info = id_token.verify_oauth2_token(
             payload.token,
-            requests.Request(),
+            google_requests.Request(),
             GOOGLE_CLIENT_ID
         )
     except ValueError:
@@ -198,51 +203,38 @@ async def auth_google(payload: AuthToken):
     picture_google = id_info.get('picture', '')
 
     with get_db() as conn:
-        # Cria perfil se não existir (INSERT OR IGNORE preserva saldo)
         conn.execute(
-            """INSERT OR IGNORE INTO perfis (google_id, nome, email, foto_url)
-               VALUES (?, ?, ?, ?)""",
+            "INSERT OR IGNORE INTO perfis (google_id, nome, email, foto_url) VALUES (?, ?, ?, ?)",
             (google_id, nome_google, email_google, picture_google)
         )
-        # Atualiza nome/email/foto do Google sempre que logar
-        # (o usuário pode ter mudado o avatar no Google)
         conn.execute(
-            """UPDATE perfis
-                  SET nome = ?, email = ?, foto_url = ?
-                WHERE google_id = ?""",
+            "UPDATE perfis SET nome = ?, email = ?, foto_url = ? WHERE google_id = ?",
             (nome_google, email_google, picture_google, google_id)
         )
         conn.commit()
-
-        # Busca perfil completo para retornar nick e saldo ao front
         row = conn.execute(
             "SELECT nick, saldo, foto_path FROM perfis WHERE google_id = ?",
             (google_id,)
         ).fetchone()
 
-    nick  = (row["nick"] if row and row["nick"] else None)
-    saldo = (row["saldo"] if row else 0.0)
+    nick  = row["nick"] if row and row["nick"] else None
+    saldo = row["saldo"] if row else 0.0
 
-    # foto_path local tem prioridade sobre URL do Google
     foto_final = picture_google
     if row and row["foto_path"]:
         nome_arquivo = os.path.basename(row["foto_path"])
-        foto_final = f"http://localhost:6500/uploads/{nome_arquivo}"
+        foto_final = f"{BASE_URL}/uploads/{nome_arquivo}"
 
     return {
         "status":    "authenticated",
         "google_id": google_id,
         "email":     email_google,
         "name":      nome_google,
-        "nick":      nick,               # ← apelido salvo no banco
-        "picture":   foto_final,         # ← foto local ou URL Google
-        "saldo":     round(saldo, 2),    # ← saldo atual
+        "nick":      nick,
+        "picture":   foto_final,
+        "saldo":     round(saldo, 2),
     }
 
-
-# ================================================================
-# PERFIL
-# ================================================================
 @app.post("/update-profile")
 async def update_profile(
     foto:     UploadFile = File(None),
@@ -251,6 +243,7 @@ async def update_profile(
 ):
     perfil_json = json.loads(dados)
 
+    # Validação de idade
     data_nasc = perfil_json.get("dataNascimento")
     if data_nasc:
         born  = date.fromisoformat(data_nasc)
@@ -259,19 +252,31 @@ async def update_profile(
         if age < 18:
             raise HTTPException(status_code=400, detail="Usuário menor de idade.")
 
+    # Validação de CPF
+    cpf_valor = perfil_json.get("cpf", "")
+    if cpf_valor and not validar_cpf(cpf_valor):
+        raise HTTPException(status_code=400, detail="CPF inválido.")
+
+    # Validação de extensão de imagem
+    EXTENSOES_PERMITIDAS = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
+    content_type_map = {
+        'image/jpeg': '.jpg', 'image/png': '.png',
+        'image/gif': '.gif', 'image/webp': '.webp'
+    }
     foto_path = None
     if foto and foto.filename:
-        # Sanitiza nome do arquivo
         ext = os.path.splitext(foto.filename)[1].lower()
-        safe_name = f"{googleId}{ext}"
+        if ext not in EXTENSOES_PERMITIDAS:
+            raise HTTPException(status_code=400, detail="Formato de imagem não permitido.")
+        # Força extensão baseada no content-type
+        ext_final = content_type_map.get(foto.content_type, ext)
+        safe_name = f"{googleId}{ext_final}"
         foto_path = os.path.join(UPLOAD_DIR, safe_name)
         with open(foto_path, "wb") as buffer:
             shutil.copyfileobj(foto.file, buffer)
 
     with get_db() as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO perfis (google_id) VALUES (?)", (googleId,)
-        )
+        conn.execute("INSERT OR IGNORE INTO perfis (google_id) VALUES (?)", (googleId,))
         if foto_path:
             conn.execute(
                 """UPDATE perfis
@@ -279,7 +284,7 @@ async def update_profile(
                           nick = ?, foto_path = ?
                     WHERE google_id = ?""",
                 (perfil_json.get('bio'), perfil_json.get('telefone'),
-                 perfil_json.get('cpf'), data_nasc,
+                 cpf_valor, data_nasc,
                  perfil_json.get('nick'), foto_path, googleId)
             )
         else:
@@ -288,19 +293,17 @@ async def update_profile(
                       SET bio = ?, telefone = ?, cpf = ?, data_nasc = ?, nick = ?
                     WHERE google_id = ?""",
                 (perfil_json.get('bio'), perfil_json.get('telefone'),
-                 perfil_json.get('cpf'), data_nasc,
+                 cpf_valor, data_nasc,
                  perfil_json.get('nick'), googleId)
             )
         conn.commit()
 
-    # Retorna a URL pública da foto para o front atualizar imediatamente
     foto_url = None
     if foto_path:
         nome_arquivo = os.path.basename(foto_path)
-        foto_url = f"http://localhost:6500/uploads/{nome_arquivo}"
+        foto_url = f"{BASE_URL}/uploads/{nome_arquivo}"
 
     return {"status": "Perfil salvo com sucesso!", "foto_url": foto_url}
-
 
 @app.get("/get-profile/{google_id}")
 async def get_profile(google_id: str):
@@ -308,17 +311,12 @@ async def get_profile(google_id: str):
         row = conn.execute(
             "SELECT * FROM perfis WHERE google_id = ?", (google_id,)
         ).fetchone()
-
         if not row:
             return {}
-
         data = dict(row)
-
-        # Gera URL pública da foto se houver arquivo local
         if data.get("foto_path"):
             nome_arquivo = os.path.basename(data["foto_path"])
-            data["foto_url"] = f"http://localhost:6500/uploads/{nome_arquivo}"
-
+            data["foto_url"] = f"{BASE_URL}/uploads/{nome_arquivo}"
         historico = conn.execute(
             """SELECT tipo, resultado, valor, delta_saldo, data
                  FROM historico
@@ -327,26 +325,18 @@ async def get_profile(google_id: str):
             (google_id,)
         ).fetchall()
         data['historico'] = [dict(r) for r in historico]
-
     return data
 
-
-# ================================================================
-# REGISTRAR JOGO — transação atômica com BEGIN IMMEDIATE
-# ================================================================
 @app.post("/registrar-jogo")
 async def registrar_jogo(payload: RegistrarJogoPayload):
     partida_id = payload.partida_id or str(uuid.uuid4())
 
-    with get_db() as conn:
-        # BEGIN IMMEDIATE: bloqueia escritas concorrentes agora,
-        # não só na primeira escrita. Essencial para apostas.
+    with get_db_exclusive() as conn:
         conn.execute("BEGIN IMMEDIATE")
 
         ja_existe = conn.execute(
             "SELECT id FROM historico WHERE partida_id = ?", (partida_id,)
         ).fetchone()
-
         if ja_existe:
             conn.rollback()
             return {"status": "already_registered", "partida_id": partida_id}
@@ -354,13 +344,12 @@ async def registrar_jogo(payload: RegistrarJogoPayload):
         row = conn.execute(
             "SELECT saldo FROM perfis WHERE google_id = ?", (payload.googleId,)
         ).fetchone()
-
         if not row:
             conn.rollback()
             raise HTTPException(status_code=404, detail="Jogador não encontrado.")
 
         saldo_atual = row["saldo"]
-
+        delta = 0.0
         if payload.resultado == "vitoria":
             delta = +payload.valor
         elif payload.resultado == "derrota":
@@ -371,8 +360,6 @@ async def registrar_jogo(payload: RegistrarJogoPayload):
                     status_code=422,
                     detail=f"Saldo insuficiente. Saldo atual: R$ {saldo_atual:.2f}"
                 )
-        else:
-            delta = 0.0
 
         conn.execute(
             """INSERT INTO historico
@@ -389,7 +376,6 @@ async def registrar_jogo(payload: RegistrarJogoPayload):
             )
 
         conn.commit()
-
         return {
             "status":     "registered",
             "partida_id": partida_id,
@@ -397,9 +383,8 @@ async def registrar_jogo(payload: RegistrarJogoPayload):
             "novo_saldo": round(saldo_atual + delta, 2)
         }
 
-
 # ================================================================
-# ENGINE DE DAMAS
+# ENGINE DE DAMAS (com otimização e multi-captura)
 # ================================================================
 def algebraic_to_index(coord: str) -> Tuple[int, int]:
     col = ord(coord[0].upper()) - ord('A')
@@ -408,7 +393,6 @@ def algebraic_to_index(coord: str) -> Tuple[int, int]:
 
 def index_to_algebraic(row: int, col: int) -> str:
     return f"{chr(ord('A') + col)}{8 - row}"
-
 
 class DamasEngine:
     @staticmethod
@@ -423,8 +407,8 @@ class DamasEngine:
 
     @staticmethod
     def verificar_fim_de_jogo(board: List[List[str]], regras: str) -> Optional[str]:
-        movs_w  = DamasEngine.obter_todos_movimentos_validos(board, "w", regras)
-        movs_b  = DamasEngine.obter_todos_movimentos_validos(board, "b", regras)
+        movs_w = DamasEngine.obter_todos_movimentos_validos(board, "w", regras)
+        movs_b = DamasEngine.obter_todos_movimentos_validos(board, "b", regras)
         pecas_w = sum(1 for row in board for cell in row if cell.lower() == 'w')
         pecas_b = sum(1 for row in board for cell in row if cell.lower() == 'b')
         if pecas_w == 0 or not movs_w: return "b"
@@ -434,17 +418,46 @@ class DamasEngine:
     @staticmethod
     def obter_todos_movimentos_validos(board, player, regras):
         movimentos = []
+        capturas = []
         for r in range(8):
             for c in range(8):
-                if board[r][c].lower() == player:
-                    for dr in [-7,-6,-5,-4,-3,-2,-1,1,2,3,4,5,6,7]:
-                        for dc in [-7,-6,-5,-4,-3,-2,-1,1,2,3,4,5,6,7]:
-                            to_r, to_c = r + dr, c + dc
-                            if 0 <= to_r < 8 and 0 <= to_c < 8:
-                                ok, _, _ = DamasEngine.validar_e_mover(board, r, c, to_r, to_c, player, regras)
-                                if ok:
-                                    movimentos.append(((r, c), (to_r, to_c)))
-        return movimentos
+                peca = board[r][c]
+                if peca == '.' or peca.lower() != player:
+                    continue
+                is_dama = peca.isupper()
+                candidatos = set()
+                # Direções diagonais
+                for dr, dc in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+                    if is_dama and regras == "brasileira":
+                        # Dama: varre toda a diagonal
+                        nr, nc = r + dr, c + dc
+                        while 0 <= nr < 8 and 0 <= nc < 8:
+                            candidatos.add((nr, nc))
+                            if board[nr][nc] != '.':
+                                # Pode capturar a peça adversária
+                                nr2, nc2 = nr + dr, nc + dc
+                                if 0 <= nr2 < 8 and 0 <= nc2 < 8 and board[nr2][nc2] == '.':
+                                    candidatos.add((nr2, nc2))
+                                break
+                            nr += dr
+                            nc += dc
+                    else:
+                        # Peça comum ou dama americana: máximo 2 casas
+                        for dist in [1, 2]:
+                            nr, nc = r + dr*dist, c + dc*dist
+                            if 0 <= nr < 8 and 0 <= nc < 8:
+                                candidatos.add((nr, nc))
+                # Validar cada candidato
+                for nr, nc in candidatos:
+                    ok, _, _ = DamasEngine.validar_e_mover(board, r, c, nr, nc, player, regras)
+                    if ok:
+                        mov = ((r, c), (nr, nc))
+                        if abs(nr - r) >= 2:
+                            capturas.append(mov)
+                        else:
+                            movimentos.append(mov)
+        # Captura obrigatória
+        return capturas if capturas else movimentos
 
     @staticmethod
     def avaliar_tabuleiro(board):
@@ -489,7 +502,7 @@ class DamasEngine:
             return best, melhor
 
     @staticmethod
-    def validar_e_mover(board, r_from, c_from, r_to, c_to, player, regras):
+    def validar_e_mover(board, r_from, c_from, r_to, c_to, player, regras, continue_capture=False):
         peca = board[r_from][c_from]
         if peca == "." or peca.lower() != player:
             return False, board, "Você não tem uma peça nessa casa."
@@ -553,11 +566,13 @@ class DamasEngine:
             elif regras == "brasileira":
                 caminho = []
                 cr, cc = r_from + sr, c_from + sc
+                capturadas = []
                 while cr != r_to:
                     if board[cr][cc] != ".":
                         caminho.append((cr, cc, board[cr][cc]))
                     cr += sr
                     cc += sc
+                # Verifica captura única (apenas uma peça no caminho)
                 if len(caminho) == 0:
                     nb = [row[:] for row in board]
                     nb[r_from][c_from] = "."
@@ -571,12 +586,19 @@ class DamasEngine:
                     nb[r_from][c_from] = "."
                     nb[rcap][ccap] = "."
                     nb[r_to][c_to] = peca
+                    # Verifica se há captura múltipla para continuar
+                    if not continue_capture:
+                        # Simula continuação para ver se a mesma peça pode capturar novamente
+                        temp_nb = [row[:] for row in nb]
+                        novas_capturas = DamasEngine.obter_todos_movimentos_validos(temp_nb, player, regras)
+                        for mov in novas_capturas:
+                            (rf, cf), (rt, ct) = mov
+                            if (rf, cf) == (r_to, c_to) and abs(rt - r_to) >= 2:
+                                return True, nb, "MULTI_CAPTURE"
                     return True, nb, "OK"
                 else:
                     return False, board, "Múltiplas peças no caminho."
-
         return False, board, "Movimento não suportado."
-
 
 # ================================================================
 # GERENCIADOR DE SALAS
@@ -592,16 +614,19 @@ class GerenciadorSalas:
 
     def desconectar(self, game_id, ws):
         if game_id in self.conexoes:
-            self.conexoes[game_id].remove(ws)
+            try:
+                self.conexoes[game_id].remove(ws)
+            except ValueError:
+                pass
 
     async def broadcast(self, game_id, msg):
         for ws in self.conexoes.get(game_id, []):
-            try: await ws.send_text(json.dumps(msg))
-            except Exception: pass
-
+            try:
+                await ws.send_text(json.dumps(msg))
+            except Exception:
+                pass
 
 salas = GerenciadorSalas()
-
 
 @app.websocket("/ws/partida/{game_id}/{player_color}")
 async def websocket_endpoint(websocket: WebSocket, game_id: str, player_color: str):
@@ -628,18 +653,26 @@ async def websocket_endpoint(websocket: WebSocket, game_id: str, player_color: s
                     partida["board"], rf, cf, rt, ct, player_color, partida["regras"])
                 if ok:
                     partida["board"] = nb
-                    partida["turn"]  = "b" if player_color == "w" else "w"
-                    venc = DamasEngine.verificar_fim_de_jogo(nb, partida["regras"])
-                    if venc:
-                        await salas.broadcast(game_id, {
-                            "type": "game_over", "winner": venc,
-                            "partida_id": partida["partida_id"], "board": nb
-                        })
-                    else:
+                    # Se for multi-captura, não troca o turno
+                    if motivo == "MULTI_CAPTURE":
                         await salas.broadcast(game_id, {
                             "type": "update", "board": nb,
-                            "turn": partida["turn"], "regras": partida["regras"]
+                            "turn": player_color, "regras": partida["regras"],
+                            "must_continue": True, "piece": [rt, ct]
                         })
+                    else:
+                        partida["turn"] = "b" if player_color == "w" else "w"
+                        venc = DamasEngine.verificar_fim_de_jogo(nb, partida["regras"])
+                        if venc:
+                            await salas.broadcast(game_id, {
+                                "type": "game_over", "winner": venc,
+                                "partida_id": partida["partida_id"], "board": nb
+                            })
+                        else:
+                            await salas.broadcast(game_id, {
+                                "type": "update", "board": nb,
+                                "turn": partida["turn"], "regras": partida["regras"]
+                            })
                 else:
                     await websocket.send_text(json.dumps({"type": "invalid_move", "message": motivo}))
             elif msg.get("type") == "config_rules":
@@ -650,7 +683,6 @@ async def websocket_endpoint(websocket: WebSocket, game_id: str, player_color: s
                 })
     except WebSocketDisconnect:
         salas.desconectar(game_id, websocket)
-
 
 @app.websocket("/ws/ia/{game_id}")
 async def websocket_ia_endpoint(websocket: WebSocket, game_id: str):
@@ -679,7 +711,13 @@ async def websocket_ia_endpoint(websocket: WebSocket, game_id: str):
                 ok, nb, motivo = DamasEngine.validar_e_mover(p["board"], rf, cf, rt, ct, "w", p["regras"])
                 if ok:
                     p["board"] = nb
-                    p["turn"]  = "b"
+                    if motivo == "MULTI_CAPTURE":
+                        await websocket.send_text(json.dumps({
+                            "type": "update", "board": p["board"], "turn": "w", "regras": p["regras"],
+                            "must_continue": True, "piece": [rt, ct]
+                        }))
+                        continue
+                    p["turn"] = "b"
                     venc = DamasEngine.verificar_fim_de_jogo(nb, p["regras"])
                     if venc:
                         await websocket.send_text(json.dumps({
@@ -711,10 +749,8 @@ async def websocket_ia_endpoint(websocket: WebSocket, game_id: str):
     except WebSocketDisconnect:
         pass
 
-
 if __name__ == "__main__":
     import uvicorn
-    # O Render atribui uma porta dinâmica via variável de ambiente PORT.
-    # Caso não encontre (localmente), utiliza a 6500.
     port = int(os.environ.get("PORT", 6500))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    # Em produção, use reload=False conforme instruções (Procfile)
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
