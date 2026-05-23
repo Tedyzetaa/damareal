@@ -325,6 +325,56 @@ class DamasEngine:
         return None
 
     @staticmethod
+    def tem_capturas_obrigatorias_da_peca(board: List[List[str]], r: int, c: int, cor: str, regras: str) -> bool:
+        """Verifica se uma peça específica tem alguma captura válida (respeitando a regra de não ir para trás)."""
+        peca = board[r][c]
+        if peca == '.' or peca.lower() != cor:
+            return False
+        is_dama = peca.isupper()
+        direcoes = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        for dr, dc in direcoes:
+            if not is_dama:
+                # Peça normal não move nem captura para trás conforme solicitado
+                if cor == 'w' and dr >= 0: continue
+                if cor == 'b' and dr <= 0: continue
+                rm, cm = r + dr, c + dc
+                rt, ct = r + 2*dr, c + 2*dc
+                if 0 <= rt < 8 and 0 <= ct < 8:
+                    if board[rm][cm] != '.' and board[rm][cm].lower() != cor and board[rt][ct] == '.':
+                        return True
+            else:
+                # Lógica para Damas
+                if regras == "americana":
+                    rm, cm = r + dr, c + dc
+                    rt, ct = r + 2*dr, c + 2*dc
+                    if 0 <= rt < 8 and 0 <= ct < 8:
+                        if board[rm][cm] != '.' and board[rm][cm].lower() != cor and board[rt][ct] == '.':
+                            return True
+                else: # Brasileira (Voo longo)
+                    found_enemy = False
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < 8 and 0 <= nc < 8:
+                        if board[nr][nc] == '.':
+                            if found_enemy: return True
+                        elif board[nr][nc].lower() == cor:
+                            break
+                        else: # inimiga
+                            if found_enemy: break # bloqueado por 2ª peça
+                            found_enemy = True
+                        nr += dr
+                        nc += dc
+        return False
+
+    @staticmethod
+    def jogador_tem_capturas_possiveis(board: List[List[str]], cor: str, regras: str) -> bool:
+        """Varre todo o tabuleiro para ver se o jogador tem qualquer captura obrigatória disponível."""
+        for r in range(8):
+            for c in range(8):
+                if DamasEngine.tem_capturas_obrigatorias_da_peca(board, r, c, cor, regras):
+                    return True
+        return False
+
+    @staticmethod
     def obter_todos_movimentos_validos(board, player, regras):
         movimentos = []
         capturas = []
@@ -419,10 +469,15 @@ class DamasEngine:
         dc = c_to - c_from
 
         if peca in ['w', 'b']:
+            # 1. Bloqueio de direção (Não pode andar E não pode comer para trás)
+            if peca == 'w' and dr >= 0:
+                return False, board, "Peças brancas comuns só movem para a frente (linhas menores)"
+            if peca == 'b' and dr <= 0:
+                return False, board, "Peças pretas comuns só movem para a frente (linhas maiores)"
+
             if abs(dr) == 1 and abs(dc) == 1:
-                if regras == "americana":
-                    if player == "w" and dr > 0: return False, board, "Peças comuns não recuam."
-                    if player == "b" and dr < 0: return False, board, "Peças comuns não recuam."
+                if continue_capture: # Se veio de uma captura combo, não pode apenas andar
+                    return False, board, "Precisa continuar capturando"
                 nb = [row[:] for row in board]
                 nb[r_from][c_from] = "."
                 nb[r_to][c_to] = peca
@@ -434,15 +489,17 @@ class DamasEngine:
                 pc = board[rm][cm]
                 if pc == "." or pc.lower() == player:
                     return False, board, "Não há peça adversária para capturar."
-                if regras == "americana":
-                    if player == "w" and dr > 0: return False, board, "Capturas devem ser para frente."
-                    if player == "b" and dr < 0: return False, board, "Capturas devem ser para frente."
+
                 nb = [row[:] for row in board]
                 nb[r_from][c_from] = "."
                 nb[rm][cm] = "."
                 nb[r_to][c_to] = peca
                 if (player == "w" and r_to == 0) or (player == "b" and r_to == 7):
                     nb[r_to][c_to] = player.upper()
+
+                # Verifica se essa peça que acabou de mover ainda tem capturas válidas
+                if DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
+                    return True, nb, "MULTI_CAPTURE"
                 return True, nb, "OK"
 
         elif peca in ['W', 'B']:
@@ -464,6 +521,8 @@ class DamasEngine:
                         nb[r_from][c_from] = "."
                         nb[rm][cm] = "."
                         nb[r_to][c_to] = peca
+                        if DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
+                             return True, nb, "MULTI_CAPTURE"
                         return True, nb, "OK"
                 return False, board, "Dama americana só move curto alcance."
 
@@ -489,12 +548,8 @@ class DamasEngine:
                     nb[rcap][ccap] = "."
                     nb[r_to][c_to] = peca
                     if not continue_capture:
-                        temp_nb = [row[:] for row in nb]
-                        novas_capturas = DamasEngine.obter_todos_movimentos_validos(temp_nb, player, regras)
-                        for mov in novas_capturas:
-                            (rf, cf), (rt, ct) = mov
-                            if (rf, cf) == (r_to, c_to) and abs(rt - r_to) >= 2:
-                                return True, nb, "MULTI_CAPTURE"
+                        if DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
+                            return True, nb, "MULTI_CAPTURE"
                     return True, nb, "OK"
                 else:
                     return False, board, "Múltiplas peças no caminho."
@@ -549,6 +604,18 @@ async def websocket_endpoint(websocket: WebSocket, game_id: str, player_color: s
             if msg.get("type") == "move" and partida["turn"] == player_color:
                 rf, cf = algebraic_to_index(msg["from"])
                 rt, ct = algebraic_to_index(msg["to"])
+
+                # ---- VALIDAÇÃO DE CAPTURA OBRIGATÓRIA ----
+                tem_que_comer = DamasEngine.jogador_tem_capturas_possiveis(partida["board"], player_color, partida["regras"])
+                movimento_eh_captura = abs(rf - rt) >= 2
+                if tem_que_comer and not movimento_eh_captura:
+                    await websocket.send_text(json.dumps({
+                        "type": "invalid_move",
+                        "message": "Movimento inválido! Você é obrigado a capturar uma peça adversária."
+                    }))
+                    continue
+                # ------------------------------------------
+
                 ok, nb, motivo = DamasEngine.validar_e_mover(
                     partida["board"], rf, cf, rt, ct, player_color, partida["regras"])
                 if ok:
@@ -607,6 +674,18 @@ async def websocket_ia_endpoint(websocket: WebSocket, game_id: str):
             if msg.get("type") == "move" and p["turn"] == "w":
                 rf, cf = algebraic_to_index(msg["from"])
                 rt, ct = algebraic_to_index(msg["to"])
+
+                # ---- VALIDAÇÃO DE CAPTURA OBRIGATÓRIA ----
+                tem_que_comer = DamasEngine.jogador_tem_capturas_possiveis(p["board"], "w", p["regras"])
+                movimento_eh_captura = abs(rf - rt) >= 2
+                if tem_que_comer and not movimento_eh_captura:
+                    await websocket.send_text(json.dumps({
+                        "type": "invalid_move",
+                        "message": "Movimento inválido! Você é obrigado a capturar uma peça adversária."
+                    }))
+                    continue
+                # ------------------------------------------
+
                 ok, nb, motivo = DamasEngine.validar_e_mover(p["board"], rf, cf, rt, ct, "w", p["regras"])
                 if ok:
                     p["board"] = nb
