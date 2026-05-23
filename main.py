@@ -5,7 +5,140 @@ import random
 import re
 import uuid
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime, timedelta
+
+# ================================================================
+# AUXILIARES PARA MATCHMAKING VIA SUPABASE (STATELESS)
+# ================================================================
+async def inserir_na_fila(jogador_id: str):
+    """Insere o jogador na fila de espera com status 'aguardando'."""
+    supabase.table("fila_espera").insert({
+        "jogador_id": jogador_id,
+        "status": "aguardando"
+    }).execute()
+
+async def remover_da_fila(jogador_id: str):
+    """Remove o jogador da fila (caso desista ou se conecte)."""
+    supabase.table("fila_espera").delete().eq("jogador_id", jogador_id).eq("status", "aguardando").execute()
+
+async def buscar_oponente(jogador_id: str) -> dict | None:
+    """
+    Procura outro jogador na fila que esteja 'aguardando'.
+    Retorna o primeiro encontrado (o mais antigo) ou None.
+    """
+    resp = supabase.table("fila_espera") \
+        .select("*") \
+        .eq("status", "aguardando") \
+        .neq("jogador_id", jogador_id) \
+        .order("created_at", desc=False) \
+        .limit(1) \
+        .execute()
+    data = resp.data
+    return data[0] if data else None
+
+async def criar_partida(jogador1_id: str, jogador2_id: str) -> str:
+    """
+    Cria uma nova sala (game_id) e associa ambos os jogadores.
+    Retorna o game_id gerado.
+    """
+    game_id = f"online_{uuid.uuid4().hex[:8]}"
+    # Inicializa a partida no dicionário de salas (GerenciadorSalas)
+    salas.partidas[game_id] = {
+        "board":      DamasEngine.criar_tabuleiro_inicial(),
+        "turn":       "w",
+        "regras":     "brasileira",
+        "partida_id": str(uuid.uuid4())
+    }
+    # Atualiza a fila: ambos os jogadores recebem o mesmo partida_id
+    supabase.table("fila_espera") \
+        .update({"status": "pareado", "partida_id": game_id}) \
+        .eq("jogador_id", jogador1_id) \
+        .execute()
+    supabase.table("fila_espera") \
+        .update({"status": "pareado", "partida_id": game_id}) \
+        .eq("jogador_id", jogador2_id) \
+        .execute()
+    return game_id
+
+async def limpar_fila_antiga():
+    """Remove entradas com mais de 5 minutos (opcional, evita acumulo)."""
+    limite = datetime.utcnow() - timedelta(minutes=5)
+    supabase.table("fila_espera") \
+        .delete() \
+        .eq("status", "aguardando") \
+        .lt("created_at", limite.isoformat()) \
+        .execute()
+
+async def obter_nick(jogador_id: str) -> str:
+    resp = supabase.table("perfis").select("nick, nome").eq("google_id", jogador_id).execute()
+    if resp.data:
+        return resp.data[0].get("nick") or resp.data[0].get("nome") or "Jogador"
+    return "Desconhecido"
+
+
+@app.websocket("/ws/lobby")
+async def websocket_lobby_endpoint(websocket: WebSocket, google_id: str = None):
+    """
+    Endpoint de matchmaking online.
+    O frontend deve passar o google_id como query parameter, ex:
+    ws://.../ws/lobby?google_id=xxx
+    """
+    if not google_id:
+        await websocket.close(code=1008, reason="google_id é obrigatório")
+        return
+
+    await websocket.accept()
+
+    # 1. Verifica se o jogador já não está em outra partida ativa (opcional)
+    # 2. Insere na fila
+    await inserir_na_fila(google_id)
+
+    # 3. Inicia loop de espera por oponente
+    try:
+        while True:
+            # Aguarda mensagens do frontend (possível cancelamento)
+            # Se não houver mensagem, faz polling a cada 2 segundos
+            try:
+                msg = await asyncio.wait_for(websocket.receive_text(), timeout=2.0)
+                data = json.loads(msg)
+                if data.get("type") == "cancel":
+                    await remover_da_fila(google_id)
+                    await websocket.close(code=1000, reason="Cancelado pelo usuário")
+                    return
+            except asyncio.TimeoutError:
+                pass
+
+            # Verifica se encontrou oponente
+            oponente = await buscar_oponente(google_id)
+            if oponente:
+                # Encontrou! Cria a partida
+                game_id = await criar_partida(google_id, oponente["jogador_id"])
+
+                # Determina as cores (primeiro que entrou fica com brancas? ou aleatório)
+                # Vamos usar ordem de criação: jogador mais antigo = brancas
+                # Buscar os registros da fila para saber quem é o mais antigo
+                resp = supabase.table("fila_espera") \
+                    .select("jogador_id, created_at") \
+                    .eq("partida_id", game_id) \
+                    .order("created_at", desc=False) \
+                    .execute()
+                ordem = resp.data
+                cor_jogador1 = "w" if ordem[0]["jogador_id"] == google_id else "b"
+                cor_jogador2 = "b" if cor_jogador1 == "w" else "w"
+
+                # Envia resposta para este jogador
+                await websocket.send_text(json.dumps({
+                    "type": "matched",
+                    "game_id": game_id,
+                    "color": cor_jogador1,
+                    "opponent_nick": await obter_nick(oponente["jogador_id"])
+                }))
+                # Fecha a conexão do lobby (o frontend irá conectar ao /ws/partida)
+                await remover_da_fila(google_id)
+                await websocket.close(code=1000, reason="Match realizado")
+                return
+    except WebSocketDisconnect:
+        await remover_da_fila(google_id)
 from typing import Dict, List, Optional, Tuple
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware

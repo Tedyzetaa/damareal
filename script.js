@@ -1,3 +1,80 @@
+
+// ============================================================
+// MATCHMAKING ONLINE (NOVO)
+// ============================================================
+function iniciarMatchmaking() {
+    if (!userProfile.googleId) {
+        showToast("Faça login antes de jogar online.", "error");
+        return;
+    }
+
+    modoAtual = 'online';
+    // Exibe uma tela de "procurando oponente..." (opcional)
+    mudarTela('screenGame');  // reutiliza a tela de jogo com um estado especial
+    document.getElementById('status').textContent = "Procurando oponente...";
+    document.getElementById('turnIndicator').className = "turn-indicator thinking";
+
+    const wsProtocol = API.startsWith('https') ? 'wss' : 'ws';
+    const lobbyWs = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/lobby?google_id=${userProfile.googleId}`);
+
+    lobbyWs.onopen = () => {
+        showToast("Conectado à fila. Aguardando adversário...", "info");
+    };
+
+    lobbyWs.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === "matched") {
+            // Match encontrado!
+            showToast(`Partida encontrada! Você é ${data.color === 'w' ? 'Brancas' : 'Pretas'}`, "success");
+            // Conectar ao WebSocket da partida real
+            conectarPartidaOnline(data.game_id, data.color);
+        }
+    };
+
+    lobbyWs.onclose = (event) => {
+        if (event.code !== 1000) {
+            showToast("Conexão com a fila perdida. Tente novamente.", "error");
+            mudarTela('screenMenu');
+        }
+    };
+
+    lobbyWs.onerror = () => {
+        showToast("Erro ao entrar na fila.", "error");
+        mudarTela('screenMenu');
+    };
+
+    // Guarda a referência para possível cancelamento (opcional)
+    window.lobbySocket = lobbyWs;
+}
+
+function conectarPartidaOnline(gameId, minhaCor) {
+    capturedByWhite = 0;
+    capturedByBlack = 0;
+    lastBoard = null;
+    partidaIdAtual = null;
+    partidaRegistrada = false;
+    minhaCorAtual = minhaCor;
+
+    if (ws) ws.close();
+    const wsProtocol = API.startsWith('https') ? 'wss' : 'ws';
+    ws = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/partida/${gameId}/${minhaCor}`);
+
+    ws.onopen = () => {
+        renderizarCoordenadas();
+        renderCaptureDots();
+        // A tela já está em 'screenGame' (definida pelo iniciarMatchmaking)
+        showToast("Conectado! Boa sorte.", "success");
+    };
+
+    ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), minhaCor);
+    ws.onclose = (event) => {
+        if (event.code !== 1000) {
+            showToast("Conexão com a partida perdida.", "error");
+            mudarTela('screenMenu');
+        }
+    };
+    ws.onerror = () => showToast("Falha ao conectar à partida.", "error");
+}
 // ============================================================
 // ESTADO GLOBAL
 // ============================================================
