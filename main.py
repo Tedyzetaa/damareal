@@ -488,88 +488,85 @@ class DamasEngine:
         dr = r_to - r_from
         dc = c_to - c_from
 
+        # --------------------------------------------------------
+        # LÓGICA PARA PEÇAS COMUNS ('w', 'b')
+        # --------------------------------------------------------
         if peca in ['w', 'b']:
-            # V3-06: Restrição de direção removida daqui (será aplicada apenas no movimento simples)
-            # Movimento simples
+            # Movimento Simples (Andar 1 casa)
             if abs(dr) == 1 and abs(dc) == 1:
                 if continue_capture:
                     return False, board, "Precisa continuar capturando."
-                # Aplica restrição de direção apenas para passos normais (não capturas)
-                if regras == "americana":
-                    if peca == 'w' and dr >= 0:
-                        return False, board, "Peças brancas comuns só andam para frente."
-                    if peca == 'b' and dr <= 0:
-                        return False, board, "Peças pretas comuns só andam para frente."
+                
+                if peca == 'w' and dr >= 0:
+                    return False, board, "Peças brancas comuns só andam para a frente."
+                if peca == 'b' and dr <= 0:
+                    return False, board, "Peças pretas comuns só andam para a frente."
+                    
                 nb = [row[:] for row in board]
                 nb[r_from][c_from] = "."
                 nb[r_to][c_to] = 'W' if (peca == 'w' and r_to == 0) else ('B' if (peca == 'b' and r_to == 7) else peca)
-                return True, nb, "OK"
-            # Captura
+                return True, nb, False # <-- CORRIGIDO: Terceiro parâmetro falso (sem multi-capture)
+                
+            # Movimento de Captura (Pular 2 casas)
             elif abs(dr) == 2 and abs(dc) == 2:
                 rm, cm = r_from + dr//2, c_from + dc//2
                 pc = board[rm][cm]
                 if pc == "." or pc.lower() == player:
                     return False, board, "Não há peça adversária para capturar."
+                    
                 nb = [row[:] for row in board]
                 nb[r_from][c_from] = "."
                 nb[rm][cm] = "."
                 nb[r_to][c_to] = 'W' if (peca == 'w' and r_to == 0) else ('B' if (peca == 'b' and r_to == 7) else peca)
-                # Verifica se pode continuar capturando
-                if not continue_capture and DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
-                    return True, nb, "MULTI_CAPTURE"
-                return True, nb, "OK"
-            return False, board, "Movimento inválido."
+                
+                if DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
+                    return True, nb, True # <-- CORRIGIDO: True indica que há mais capturas (Combo)
+                return True, nb, False    # <-- CORRIGIDO: False indica fim da jogada
+                
+            return False, board, "Movimento inválido para peça comum."
 
+        # --------------------------------------------------------
+        # LÓGICA PARA DAMAS ('W', 'B') - VOO LONGO
+        # --------------------------------------------------------
         elif peca in ['W', 'B']:
             if abs(dr) != abs(dc):
                 return False, board, "Damas só se movem na diagonal."
+                
             sr = 1 if dr > 0 else -1
             sc = 1 if dc > 0 else -1
-
-            if regras == "americana":
-                if abs(dr) == 1:
-                    nb = [row[:] for row in board]
-                    nb[r_from][c_from] = "."
-                    nb[r_to][c_to] = peca
-                    return True, nb, "OK"
-                elif abs(dr) == 2:
-                    rm, cm = r_from + sr, c_from + sc
-                    if board[rm][cm] != "." and board[rm][cm].lower() != player:
-                        nb = [row[:] for row in board]
-                        nb[r_from][c_from] = "."
-                        nb[rm][cm] = "."
-                        nb[r_to][c_to] = peca
-                        if not continue_capture and DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
-                            return True, nb, "MULTI_CAPTURE"
-                        return True, nb, "OK"
-                return False, board, "Dama americana só move curto alcance."
-
-            elif regras == "brasileira":
-                caminho = []
-                cr, cc = r_from + sr, c_from + sc
-                while cr != r_to:
-                    if board[cr][cc] != ".":
-                        caminho.append((cr, cc, board[cr][cc]))
-                    cr += sr
-                    cc += sc
-                if len(caminho) == 0:
-                    nb = [row[:] for row in board]
-                    nb[r_from][c_from] = "."
-                    nb[r_to][c_to] = peca
-                    return True, nb, "OK"
-                elif len(caminho) == 1:
-                    rcap, ccap, pcap = caminho[0]
-                    if pcap.lower() == player:
-                        return False, board, "Você não pode pular sua própria peça."
-                    nb = [row[:] for row in board]
-                    nb[r_from][c_from] = "."
-                    nb[rcap][ccap] = "."
-                    nb[r_to][c_to] = peca
-                    if not continue_capture and DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
-                        return True, nb, "MULTI_CAPTURE"
-                    return True, nb, "OK"
-                else:
-                    return False, board, "Múltiplas peças no caminho."
+            
+            caminho = []
+            cr, cc = r_from + sr, c_from + sc
+            while cr != r_to:
+                if board[cr][cc] != ".":
+                    caminho.append((cr, cc, board[cr][cc]))
+                cr += sr
+                cc += sc
+                
+            if len(caminho) == 0:
+                if continue_capture:
+                    return False, board, "Dama precisa continuar capturando."
+                nb = [row[:] for row in board]
+                nb[r_from][c_from] = "."
+                nb[r_to][c_to] = peca
+                return True, nb, False # <-- CORRIGIDO: Sem capturas pendentes
+                
+            elif len(caminho) == 1:
+                rcap, ccap, pcap = caminho[0]
+                if pcap.lower() == player:
+                    return False, board, "Você não pode pular a sua própria peça."
+                    
+                nb = [row[:] for row in board]
+                nb[r_from][c_from] = "."
+                nb[rcap][ccap] = "."
+                nb[r_to][c_to] = peca
+                
+                if DamasEngine.tem_capturas_obrigatorias_da_peca(nb, r_to, c_to, player, regras):
+                    return True, nb, True # <-- CORRIGIDO: Tem combo de Dama
+                return True, nb, False    # <-- CORRIGIDO: Fim do turno da Dama
+            else:
+                return False, board, "Múltiplas peças no caminho diagonal."
+                
         return False, board, "Movimento não suportado."
 
 # ================================================================
@@ -635,7 +632,7 @@ async def websocket_endpoint(websocket: WebSocket, game_id: str, player_color: s
                     partida["board"], rf, cf, rt, ct, player_color, partida["regras"])
                 if ok:
                     partida["board"] = nb
-                    if motivo == "MULTI_CAPTURE":
+                    if motivo:
                         await salas.broadcast(game_id, {
                             "type": "update", "board": nb,
                             "turn": player_color, "regras": partida["regras"],
@@ -715,8 +712,8 @@ async def websocket_ia_endpoint(websocket: WebSocket, game_id: str):
                         }))
                         continue
                     
-                    # V3-05: comparação correta com "MULTI_CAPTURE"
-                    if motivo == "MULTI_CAPTURE" and movimento_eh_captura_w:
+                    # Combo check
+                    if motivo and movimento_eh_captura_w:
                         await websocket.send_text(json.dumps({
                             "type": "update", "board": p["board"], "turn": "w", "regras": p["regras"],
                             "must_continue": True, "piece": [irt, ict]
