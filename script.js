@@ -1,80 +1,3 @@
-
-// ============================================================
-// MATCHMAKING ONLINE (NOVO)
-// ============================================================
-function iniciarMatchmaking() {
-    if (!userProfile.googleId) {
-        showToast("Faça login antes de jogar online.", "error");
-        return;
-    }
-
-    modoAtual = 'online';
-    // Exibe uma tela de "procurando oponente..." (opcional)
-    mudarTela('screenGame');  // reutiliza a tela de jogo com um estado especial
-    document.getElementById('status').textContent = "Procurando oponente...";
-    document.getElementById('turnIndicator').className = "turn-indicator thinking";
-
-    const wsProtocol = API.startsWith('https') ? 'wss' : 'ws';
-    const lobbyWs = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/lobby?google_id=${userProfile.googleId}`);
-
-    lobbyWs.onopen = () => {
-        showToast("Conectado à fila. Aguardando adversário...", "info");
-    };
-
-    lobbyWs.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.type === "matched") {
-            // Match encontrado!
-            showToast(`Partida encontrada! Você é ${data.color === 'w' ? 'Brancas' : 'Pretas'}`, "success");
-            // Conectar ao WebSocket da partida real
-            conectarPartidaOnline(data.game_id, data.color);
-        }
-    };
-
-    lobbyWs.onclose = (event) => {
-        if (event.code !== 1000) {
-            showToast("Conexão com a fila perdida. Tente novamente.", "error");
-            mudarTela('screenMenu');
-        }
-    };
-
-    lobbyWs.onerror = () => {
-        showToast("Erro ao entrar na fila.", "error");
-        mudarTela('screenMenu');
-    };
-
-    // Guarda a referência para possível cancelamento (opcional)
-    window.lobbySocket = lobbyWs;
-}
-
-function conectarPartidaOnline(gameId, minhaCor) {
-    capturedByWhite = 0;
-    capturedByBlack = 0;
-    lastBoard = null;
-    partidaIdAtual = null;
-    partidaRegistrada = false;
-    minhaCorAtual = minhaCor;
-
-    if (ws) ws.close();
-    const wsProtocol = API.startsWith('https') ? 'wss' : 'ws';
-    ws = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/partida/${gameId}/${minhaCor}`);
-
-    ws.onopen = () => {
-        renderizarCoordenadas();
-        renderCaptureDots();
-        // A tela já está em 'screenGame' (definida pelo iniciarMatchmaking)
-        showToast("Conectado! Boa sorte.", "success");
-    };
-
-    ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), minhaCor);
-    ws.onclose = (event) => {
-        if (event.code !== 1000) {
-            showToast("Conexão com a partida perdida.", "error");
-            mudarTela('screenMenu');
-        }
-    };
-    ws.onerror = () => showToast("Falha ao conectar à partida.", "error");
-}
 // ============================================================
 // ESTADO GLOBAL
 // ============================================================
@@ -82,7 +5,7 @@ let ws              = null;
 let selectedSquare  = null;
 let currentBoard    = [];
 let meuTurno        = false;
-let modoAtual       = '';
+let modoAtual       = '';         // 'ia' | 'online' | 'apostada' | 'searching'
 let lastBoard       = null;
 let capturedByWhite = 0;
 let capturedByBlack = 0;
@@ -124,14 +47,14 @@ function showToast(msg, type = 'info', duration = 3500) {
 }
 
 // ============================================================
-// HEALTH CHECK (NOVO-08: chamado no load)
+// HEALTH CHECK
 // ============================================================
 async function healthCheck() {
     showToast('Conectando ao servidor (pode levar ~30s)...', 'info', 8000);
     try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000);
-        const res = await fetch(`${API}/health`, { signal: controller.signal });
+        const timeoutId  = setTimeout(() => controller.abort(), 60000);
+        const res        = await fetch(`${API}/health`, { signal: controller.signal });
         clearTimeout(timeoutId);
         if (res.ok) {
             showToast('Servidor pronto!', 'success', 2000);
@@ -184,7 +107,7 @@ function renderBoard() {
             const sq    = document.createElement('div');
             const isDark = (r + c) % 2 === 1;
             sq.className = `square ${isDark ? 'dark' : 'light'}`;
-            const peca  = (currentBoard[r] && currentBoard[r][c]) ? currentBoard[r][c] : '.';
+            const peca   = (currentBoard[r] && currentBoard[r][c]) ? currentBoard[r][c] : '.';
             if (selectedSquare && selectedSquare.row === r && selectedSquare.col === c)
                 sq.classList.add('selected-sq');
             if (peca !== '.') {
@@ -208,9 +131,8 @@ function renderBoard() {
 function handleSquareClick(r, c) {
     if (!meuTurno) return;
     const peca = currentBoard[r] ? currentBoard[r][c] : '.';
-    const minhaCor = minhaCorAtual;
     if (!selectedSquare) {
-        if (peca !== '.' && peca.toLowerCase() === minhaCor) {
+        if (peca !== '.' && peca.toLowerCase() === minhaCorAtual) {
             selectedSquare = { row: r, col: c };
             renderBoard();
         }
@@ -218,7 +140,7 @@ function handleSquareClick(r, c) {
         if (selectedSquare.row === r && selectedSquare.col === c) {
             selectedSquare = null; renderBoard(); return;
         }
-        if (peca !== '.' && peca.toLowerCase() === minhaCor) {
+        if (peca !== '.' && peca.toLowerCase() === minhaCorAtual) {
             selectedSquare = { row: r, col: c }; renderBoard(); return;
         }
         ws.send(JSON.stringify({
@@ -247,14 +169,16 @@ function contarPecas(board) {
         }
     return { w, b };
 }
+
 function atualizarCapturados2(prevBoard, newBoard) {
-    if (!prevBoard) return;
+    if (!prevBoard || !prevBoard.length) return;
     const prev = contarPecas(prevBoard);
     const curr = contarPecas(newBoard);
     capturedByWhite += Math.max(0, prev.b - curr.b);
     capturedByBlack += Math.max(0, prev.w - curr.w);
     renderCaptureDots();
 }
+
 function renderCaptureDots() {
     const byWhite = document.getElementById('capturedByWhite');
     const byBlack = document.getElementById('capturedByBlack');
@@ -270,36 +194,42 @@ function renderCaptureDots() {
 }
 
 // ============================================================
-// STATUS / INDICADOR
+// STATUS / INDICADOR (corrigido)
 // ============================================================
 function atualizarStatus(turno, ehMeuTurno, modo) {
     const ind  = document.getElementById('turnIndicator');
     const stat = document.getElementById('status');
-    if (modo === 'ia' && turno === 'b') {
-        ind.className    = 'turn-indicator thinking';
+    if (modo === 'ia' && !ehMeuTurno) {
+        ind.className = 'turn-indicator thinking';
         stat.textContent = 'IA calculando...';
     } else if (ehMeuTurno) {
-        ind.className    = 'turn-indicator ' + (turno === 'w' ? 'white' : 'black');
+        ind.className = 'turn-indicator ' + (turno === 'w' ? 'white' : 'black');
         stat.textContent = `Seu turno — ${turno === 'w' ? 'Brancas' : 'Pretas'}`;
     } else {
-        ind.className    = 'turn-indicator ' + (turno === 'w' ? 'white' : 'black');
+        ind.className = 'turn-indicator ' + (turno === 'w' ? 'white' : 'black');
         stat.textContent = 'Aguardando adversário...';
     }
 }
 
 // ============================================================
-// WEBSOCKET HELPERS
+// WEBSOCKET — MENSAGENS DO SERVIDOR (captura corrigida)
 // ============================================================
 function onMensagemServidor(data, minhaCor) {
     if (data.type === 'init' || data.type === 'update') {
         const sel = document.getElementById('rulesSelectGame');
         if (sel) sel.value = data.regras;
-        atualizarCapturados2(lastBoard, data.board);
-        lastBoard    = currentBoard.map(r => [...r]);
+
+        // Guarda o board antigo antes de atualizar
+        const oldBoard = currentBoard.length ? currentBoard.map(row => [...row]) : null;
         currentBoard = data.board;
-        meuTurno     = (data.turn === minhaCor);
+        if (oldBoard) {
+            atualizarCapturados2(oldBoard, currentBoard);
+        }
+
+        meuTurno = (data.turn === minhaCor);
         renderBoard();
         atualizarStatus(data.turn, meuTurno, modoAtual);
+
         if (data.alerta) showToast(data.alerta, 'info');
         if (data.must_continue) {
             showToast('Captura múltipla! Continue movendo a mesma peça.', 'info', 3000);
@@ -314,7 +244,6 @@ function onMensagemServidor(data, minhaCor) {
         partidaIdAtual    = data.partida_id || null;
         partidaRegistrada = false;
         if (data.board) {
-            lastBoard    = currentBoard.map(r => [...r]);
             currentBoard = data.board;
             renderBoard();
         }
@@ -323,34 +252,150 @@ function onMensagemServidor(data, minhaCor) {
 }
 
 // ============================================================
-// JOGAR CONTRA IA
+// JOGAR CONTRA IA — COR ALEATÓRIA
 // ============================================================
 function jogarContraIA() {
-    modoAtual = 'ia';
+    const corAleatoria = Math.random() < 0.5 ? 'w' : 'b';
+    const corNome      = corAleatoria === 'w' ? 'Brancas' : 'Pretas';
+
+    modoAtual       = 'ia';
     capturedByWhite = 0;
     capturedByBlack = 0;
-    lastBoard = null;
-    partidaIdAtual = null;
+    lastBoard       = null;
+    currentBoard    = [];
+    partidaIdAtual  = null;
     partidaRegistrada = false;
-    minhaCorAtual = 'w';
-    document.getElementById('playerColor').value = 'w';
+    minhaCorAtual   = corAleatoria;
+
     if (ws) ws.close();
-    const gameId = 'ia_room_' + Math.floor(Math.random() * 99999);
-    const wsProtocol = API.startsWith('https') ? 'wss' : 'ws';
-    ws = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/ia/${gameId}`);
-    ws.onopen    = () => { mudarTela('screenGame'); renderizarCoordenadas(); renderCaptureDots(); showToast('Conectado! Boa sorte.', 'success'); };
-    ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), 'w');
+
+    const gameId      = 'ia_' + Math.floor(Math.random() * 99999);
+    const wsProtocol  = API.startsWith('https') ? 'wss' : 'ws';
+    const baseWsUrl   = API.split('://')[1];
+    ws = new WebSocket(`${wsProtocol}://${baseWsUrl}/ws/ia/${gameId}/${corAleatoria}`);
+
+    ws.onopen = () => {
+        mudarTela('screenGame');
+        renderizarCoordenadas();
+        renderCaptureDots();
+        // Restaura botão de abandono
+        const btnAbandono = document.getElementById('btn-surrender');
+        if (btnAbandono) {
+            btnAbandono.textContent = '🏳 Abandonar';
+            btnAbandono.onclick = confirmarAbandono;
+        }
+        showToast(`Você joga de ${corNome}. Boa sorte!`, 'success');
+    };
+    ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), minhaCorAtual);
     ws.onclose = (event) => {
         if (event.code !== 1000) {
             showToast('Conexão com o servidor perdida. Tente novamente.', 'error', 5000);
             mudarTela('screenMenu');
         }
     };
-    ws.onerror   = ()  => showToast('Erro de conexão com o servidor.', 'error');
+    ws.onerror = () => showToast('Erro de conexão com o servidor.', 'error');
 }
 
 // ============================================================
-// LOBBY → ARENA
+// MATCHMAKING ONLINE
+// ============================================================
+function iniciarMatchmaking() {
+    if (!userProfile.googleId) {
+        showToast("Faça login antes de jogar online.", "error");
+        return;
+    }
+
+    modoAtual = 'searching';
+
+    mudarTela('screenGame');
+    currentBoard = [];
+    document.getElementById('status').textContent   = 'Procurando oponente...';
+    document.getElementById('turnIndicator').className = 'turn-indicator thinking';
+
+    const btnAbandono = document.getElementById('btn-surrender');
+    if (btnAbandono) {
+        btnAbandono.textContent = '✕ Cancelar Busca';
+        btnAbandono.onclick = cancelarMatchmaking;
+    }
+
+    const wsProtocol = API.startsWith('https') ? 'wss' : 'ws';
+    const lobbyWs = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/lobby?google_id=${userProfile.googleId}`);
+    window.lobbySocket = lobbyWs;
+
+    lobbyWs.onopen = () => {
+        showToast("Conectado à fila. Aguardando adversário...", "info");
+    };
+    lobbyWs.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === "matched") {
+            const corNome = data.color === 'w' ? 'Brancas' : 'Pretas';
+            showToast(`Oponente encontrado: ${data.opponent_nick || 'Jogador'}! Você joga de ${corNome}.`, "success", 4000);
+            window.lobbySocket = null;
+            conectarPartidaOnline(data.game_id, data.color);
+        }
+    };
+    lobbyWs.onclose = (event) => {
+        if (event.code !== 1000 && modoAtual === 'searching') {
+            showToast("Conexão com a fila perdida. Tente novamente.", "error");
+            mudarTela('screenMenu');
+        }
+    };
+    lobbyWs.onerror = () => {
+        if (modoAtual === 'searching') {
+            showToast("Erro ao entrar na fila.", "error");
+            mudarTela('screenMenu');
+        }
+    };
+}
+
+function cancelarMatchmaking() {
+    if (window.lobbySocket && window.lobbySocket.readyState === WebSocket.OPEN) {
+        window.lobbySocket.send(JSON.stringify({ type: "cancel" }));
+        window.lobbySocket.close(1000);
+    }
+    window.lobbySocket = null;
+    modoAtual = '';
+    showToast("Busca cancelada.", "info", 2000);
+    mudarTela('screenMenu');
+}
+
+function conectarPartidaOnline(gameId, minhaCor) {
+    capturedByWhite   = 0;
+    capturedByBlack   = 0;
+    lastBoard         = null;
+    currentBoard      = [];
+    partidaIdAtual    = null;
+    partidaRegistrada = false;
+    minhaCorAtual     = minhaCor;
+    modoAtual         = 'online';
+
+    if (ws) ws.close();
+
+    const wsProtocol = API.startsWith('https') ? 'wss' : 'ws';
+    ws = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/partida/${gameId}/${minhaCor}`);
+
+    ws.onopen = () => {
+        renderizarCoordenadas();
+        renderCaptureDots();
+        const btnAbandono = document.getElementById('btn-surrender');
+        if (btnAbandono) {
+            btnAbandono.textContent = '🏳 Abandonar';
+            btnAbandono.onclick = confirmarAbandono;
+        }
+        showToast("Conectado! Boa sorte.", "success");
+    };
+    ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), minhaCor);
+    ws.onclose = (event) => {
+        if (event.code !== 1000) {
+            showToast("Conexão com a partida perdida.", "error");
+            mudarTela('screenMenu');
+        }
+    };
+    ws.onerror = () => showToast("Falha ao conectar à partida.", "error");
+}
+
+// ============================================================
+// LOBBY MANUAL (SALA APOSTADA / TESTE)
 // ============================================================
 function irParaLobby(modo) {
     modoAtual = modo;
@@ -360,18 +405,37 @@ function irParaLobby(modo) {
         showToast('Modo apostado: infraestrutura financeira será ativada ao conectar.', 'info', 5000);
     mudarTela('screenLobby');
 }
+
 function conectarServidor() {
     const gameId = document.getElementById('gameId').value.trim();
     const color  = document.getElementById('playerColor').value;
     const rules  = document.getElementById('rulesSelectLobby').value;
     if (!gameId) { showToast('Informe o ID da sala.', 'error'); return; }
-    capturedByWhite = 0; capturedByBlack = 0; lastBoard = null;
-    partidaIdAtual = null; partidaRegistrada = false;
-    minhaCorAtual = color;
+
+    capturedByWhite   = 0;
+    capturedByBlack   = 0;
+    lastBoard         = null;
+    currentBoard      = [];
+    partidaIdAtual    = null;
+    partidaRegistrada = false;
+    minhaCorAtual     = color;
+
     if (ws) ws.close();
     const wsProtocol = API.startsWith('https') ? 'wss' : 'ws';
     ws = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/partida/${gameId}/${color}`);
-    ws.onopen    = () => { mudarTela('screenGame'); renderizarCoordenadas(); renderCaptureDots(); ws.send(JSON.stringify({ type: 'config_rules', regras: rules })); showToast('Conectado!', 'success'); };
+
+    ws.onopen = () => {
+        mudarTela('screenGame');
+        renderizarCoordenadas();
+        renderCaptureDots();
+        const btnAbandono = document.getElementById('btn-surrender');
+        if (btnAbandono) {
+            btnAbandono.textContent = '🏳 Abandonar';
+            btnAbandono.onclick = confirmarAbandono;
+        }
+        ws.send(JSON.stringify({ type: 'config_rules', regras: rules }));
+        showToast('Conectado!', 'success');
+    };
     ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), color);
     ws.onclose   = (event) => {
         if (event.code !== 1000) {
@@ -379,17 +443,22 @@ function conectarServidor() {
             mudarTela('screenMenu');
         }
     };
-    ws.onerror   = ()  => showToast('Falha ao conectar com o servidor.', 'error');
+    ws.onerror = () => showToast('Falha ao conectar com o servidor.', 'error');
 }
+
 function mudarRegras(novaRegra) {
     if (ws && ws.readyState === WebSocket.OPEN)
         ws.send(JSON.stringify({ type: 'config_rules', regras: novaRegra }));
 }
 
 // ============================================================
-// ABANDONO
+// ABANDONO / CANCELAMENTO
 // ============================================================
 function confirmarAbandono() {
+    if (modoAtual === 'searching') {
+        cancelarMatchmaking();
+        return;
+    }
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay open';
     overlay.innerHTML = `
@@ -404,6 +473,7 @@ function confirmarAbandono() {
         </div>`;
     document.body.appendChild(overlay);
 }
+
 function abandonarPartida() {
     document.querySelectorAll('.modal-overlay').forEach(m => m.remove());
     if (ws) ws.close(1000, 'Abandono voluntário');
@@ -411,13 +481,15 @@ function abandonarPartida() {
 }
 
 // ============================================================
-// MODAL FIM DE JOGO
+// MODAL FIM DE JOGO — DINÂMICO
 // ============================================================
 function abrirModalFimJogo(winner, minhaCor) {
     const trophy   = document.getElementById('modalTrophy');
     const title    = document.getElementById('modalTitle');
     const subtitle = document.getElementById('modalSubtitle');
+    const btnRepeat = document.getElementById('btnJogarNovamente');
     let resultado;
+
     if (winner === minhaCor) {
         trophy.textContent   = '🏆';
         title.textContent    = 'Vitória!';
@@ -430,13 +502,28 @@ function abrirModalFimJogo(winner, minhaCor) {
         resultado = 'empate';
     } else {
         trophy.textContent   = modoAtual === 'ia' ? '💀' : '🏆';
-        title.textContent    = modoAtual === 'ia' ? 'Derrota' : 'Vitória!';
+        title.textContent    = modoAtual === 'ia' ? 'Derrota' : 'Vitória do Adversário';
         subtitle.textContent = modoAtual === 'ia' ? 'A IA venceu desta vez.' : `As ${winner === 'w' ? 'Brancas' : 'Pretas'} venceram.`;
         resultado = 'derrota';
     }
+
+    if (btnRepeat) {
+        if (modoAtual === 'online') {
+            btnRepeat.onclick = () => { fecharModal(); iniciarMatchmaking(); };
+            btnRepeat.textContent = 'Revanche Online';
+        } else if (modoAtual === 'ia') {
+            btnRepeat.onclick = () => { fecharModal(); jogarContraIA(); };
+            btnRepeat.textContent = 'Jogar Novamente';
+        } else {
+            btnRepeat.onclick = () => { fecharModal(); mudarTela('screenMenu'); };
+            btnRepeat.textContent = 'Menu';
+        }
+    }
+
     document.getElementById('modalFimJogo').classList.add('open');
     registrarJogoNoServidor(resultado);
 }
+
 function fecharModal() {
     document.getElementById('modalFimJogo').classList.remove('open');
 }
@@ -448,8 +535,11 @@ async function registrarJogoNoServidor(resultado, valorAposta = 0) {
     if (!userProfile.googleId) return;
     if (partidaRegistrada) return;
     partidaRegistrada = true;
+
     let tipoEnvio = modoAtual || 'online';
-    if (tipoEnvio === 'apostada') tipoEnvio = 'aposta';
+    if (tipoEnvio === 'apostada')  tipoEnvio = 'aposta';
+    if (tipoEnvio === 'searching') tipoEnvio = 'online';
+
     const payload = {
         googleId:   userProfile.googleId,
         tipo:       tipoEnvio,
@@ -458,7 +548,7 @@ async function registrarJogoNoServidor(resultado, valorAposta = 0) {
         partida_id: partidaIdAtual
     };
     try {
-        const res  = await fetch(`${API}/registrar-jogo`, {
+        const res = await fetch(`${API}/registrar-jogo`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
@@ -489,10 +579,10 @@ function inicializarBotaoGoogle() {
         return;
     }
     google.accounts.id.initialize({
-        client_id:              CONFIG.GOOGLE_CLIENT_ID,
-        callback:               handleCredentialResponse,
-        auto_select:            true,
-        cancel_on_tap_outside:  false,
+        client_id:             CONFIG.GOOGLE_CLIENT_ID,
+        callback:              handleCredentialResponse,
+        auto_select:           true,
+        cancel_on_tap_outside: false,
     });
     google.accounts.id.renderButton(
         document.getElementById('googleBtnContainer'),
@@ -515,7 +605,7 @@ async function processarLogin(token) {
         const res = await fetch(`${API}/auth/google`, {
             method:  'POST',
             headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify({ token: token })
+            body:    JSON.stringify({ token })
         });
 
         if (!res.ok) {
@@ -636,7 +726,8 @@ function verificarIdade(dataNasc) {
     if (!dataNasc) return false;
     const hoje = new Date(), nasc = new Date(dataNasc);
     let idade = hoje.getFullYear() - nasc.getFullYear();
-    if (hoje.getMonth() - nasc.getMonth() < 0 || (hoje.getMonth() === nasc.getMonth() && hoje.getDate() < nasc.getDate()))
+    if (hoje.getMonth() - nasc.getMonth() < 0 ||
+        (hoje.getMonth() === nasc.getMonth() && hoje.getDate() < nasc.getDate()))
         idade--;
     return idade >= 18;
 }
@@ -674,22 +765,22 @@ async function salvarPerfil(event) {
     userProfile.telefone       = document.getElementById('telefone').value;
     userProfile.cpf            = cpfValor;
     userProfile.dataNascimento = dataNasc;
+
     const btn = document.querySelector('#perfil-container .btn-primary');
     if (btn) { btn.disabled = true; btn.textContent = 'Salvando...'; }
-    const formData = new FormData();
+
+    const formData  = new FormData();
     const fileInput = document.getElementById('inputFoto');
-    if (fileInput.files.length > 0)
-        formData.append('foto', fileInput.files[0]);
+    if (fileInput.files.length > 0) formData.append('foto', fileInput.files[0]);
     formData.append('googleId', userProfile.googleId);
     formData.append('dados', JSON.stringify(userProfile));
+
     try {
         const res = await fetch(`${API}/update-profile`, { method: 'POST', body: formData });
         if (res.ok) {
             const data = await res.json();
             showToast('Perfil atualizado com sucesso!', 'success');
-            if (userProfile.nick) {
-                document.getElementById('userName').textContent = userProfile.nick;
-            }
+            if (userProfile.nick) document.getElementById('userName').textContent = userProfile.nick;
             if (data.foto_url) {
                 document.getElementById('userPicture').src = data.foto_url;
                 document.getElementById('previewFoto').src = data.foto_url;
@@ -707,15 +798,14 @@ async function salvarPerfil(event) {
 }
 
 // ============================================================
-// INICIALIZAÇÃO (NOVO-08 e V3-07)
+// INICIALIZAÇÃO
 // ============================================================
 document.addEventListener('DOMContentLoaded', async () => {
     inicializarBotaoGoogle();
-    await healthCheck();                // Aguarda o servidor acordar
-    verificarLoginPersistente();        // Só então tenta o relogin
+    await healthCheck();
+    verificarLoginPersistente();
 });
 
-// NOVO-01 + NOVO-06: Persistência apenas com localStorage
 async function verificarLoginPersistente() {
     const credential = localStorage.getItem('dr_credential');
     if (credential) {

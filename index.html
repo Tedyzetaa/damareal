@@ -23,7 +23,7 @@
         <div class="modal-subtitle" id="modalSubtitle">As Brancas venceram a partida.</div>
         <div class="modal-actions">
             <button class="btn-modal-secondary" onclick="fecharModal(); mudarTela('screenMenu')">Menu</button>
-            <button class="btn-modal-primary"   onclick="fecharModal(); jogarContraIA()">Jogar Novamente</button>
+            <button class="btn-modal-primary" id="btnJogarNovamente" onclick="fecharModal(); jogarContraIA()">Jogar Novamente</button>
         </div>
     </div>
 </div>
@@ -52,19 +52,15 @@
         <div class="hero">
             <div class="hero-emblem">
                 <svg viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <!-- Tabuleiro estilizado 2x2 -->
                     <rect width="72" height="72" rx="12" fill="#1c2330"/>
                     <rect x="8"  y="8"  width="26" height="26" rx="3" fill="#7b4f2e" opacity="0.9"/>
                     <rect x="38" y="8"  width="26" height="26" rx="3" fill="#e8d5a3" opacity="0.9"/>
                     <rect x="8"  y="38" width="26" height="26" rx="3" fill="#e8d5a3" opacity="0.9"/>
                     <rect x="38" y="38" width="26" height="26" rx="3" fill="#7b4f2e" opacity="0.9"/>
-                    <!-- Peça preta -->
                     <circle cx="21" cy="21" r="9" fill="#222" stroke="#555" stroke-width="1.5"/>
                     <circle cx="21" cy="20" r="7" fill="none" stroke="rgba(100,100,100,0.3)" stroke-width="1"/>
-                    <!-- Peça branca -->
                     <circle cx="51" cy="51" r="9" fill="#e8d5a3" stroke="#c8a060" stroke-width="1.5"/>
                     <circle cx="51" cy="50" r="7" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
-                    <!-- Coroa dourada no canto -->
                     <text x="38" y="35" font-size="18" fill="#c8963c" opacity="0.95">♛</text>
                 </svg>
             </div>
@@ -235,12 +231,12 @@
                         <tr style="border-bottom: 1px solid var(--gold-dim); text-align: left;">
                             <th style="padding: 10px;">Tipo</th>
                             <th style="padding: 10px;">Resultado</th>
-                        </tr>
+                        </table>
                     </thead>
                     <tbody id="tabela-historico">
                         <!-- As linhas serão inseridas aqui via JS -->
                     </tbody>
-                </table>
+                \d2
             </div>
         </div>
     </div>
@@ -253,7 +249,7 @@
 
             <!-- Top bar -->
             <div class="game-topbar">
-                <button class="btn-surrender" onclick="confirmarAbandono()">
+                <button class="btn-surrender" id="btn-surrender" onclick="confirmarAbandono()">
                     🏳 Abandonar
                 </button>
                 <div class="turn-panel">
