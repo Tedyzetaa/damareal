@@ -3,7 +3,6 @@ import json
 import os
 import random
 import re
-import shutil
 import uuid
 from datetime import date
 from typing import Dict, List, Optional, Tuple
@@ -27,17 +26,28 @@ app = FastAPI(title="Damas Real - Server-Side Engine com IA")
 # CONFIGURAÇÕES DE AMBIENTE
 # ================================================================
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:6500")
-DB_PATH = os.environ.get("DB_PATH", "damas_real.db")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY")
 
+# Validação obrigatória das variáveis do Supabase (NOVO-04)
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError(
+        "SUPABASE_URL e SUPABASE_ANON_KEY são obrigatórias. "
+        "Configure-as no painel do Render ou no arquivo .env."
+    )
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+# ================================================================
+# CONFIGURAÇÃO DO BUCKET PARA AVATARES (NOVO-07)
+# ================================================================
+def ensure_avatars_bucket():
+    try:
+        supabase.storage.get_bucket("avatars")
+    except Exception:
+        supabase.storage.create_bucket("avatars", {"public": True})
+ensure_avatars_bucket()
 
 # ================================================================
 # RATE LIMITING
@@ -47,7 +57,7 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ================================================================
-# CORS (inclui domínio do Render)
+# CORS
 # ================================================================
 app.add_middleware(
     CORSMiddleware,
@@ -64,9 +74,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ================================================================
-# BANCO DE DADOS (com suporte a DB_PATH via env)
-# ================================================================
 # ================================================================
 # VALIDAÇÕES
 # ================================================================
@@ -98,7 +105,6 @@ class RegistrarJogoPayload(BaseModel):
 
     @validator('tipo')
     def tipo_valido(cls, v):
-        # Aceita 'apostada' também (frontend) e normaliza internamente
         if v not in ('ia', 'online', 'aposta', 'apostada'):
             raise ValueError("tipo deve ser 'ia', 'online', 'aposta' ou 'apostada'")
         return 'aposta' if v == 'apostada' else v
@@ -129,28 +135,28 @@ async def auth_google(request: Request, payload: AuthToken):
         raise HTTPException(status_code=401, detail="Token inválido ou expirado.")
 
     google_id     = id_info['sub']
+    email_google  = id_info.get('email', '')
+    nome_google   = id_info.get('name', 'Jogador Real')
+    picture_google = id_info.get('picture', '')
 
     profile_data = {
         "google_id": google_id,
-        "nome": id_info.get('name', 'Jogador Real'),
-        "email": id_info.get('email', ''),
-        "foto_url": id_info.get('picture', '')
+        "nome": nome_google,
+        "email": email_google,
+        "foto_url": picture_google   # inicialmente a foto do Google
     }
 
     # upsert no Supabase
     supabase.table("perfis").upsert(profile_data, on_conflict="google_id").execute()
 
-    res = supabase.table("perfis").select("nick, saldo, foto_path").eq("google_id", google_id).execute()
+    res = supabase.table("perfis").select("nick, saldo, foto_url").eq("google_id", google_id).execute()
     row = res.data[0] if res.data else None
 
     nick  = row.get("nick") if row else None
     saldo = row.get("saldo", 0.0) if row else 0.0
+    foto_final = row.get("foto_url") if row and row.get("foto_url") else picture_google
 
-    foto_final = profile_data["foto_url"]
-    if row and row.get("foto_path"):
-        nome_arquivo = os.path.basename(row["foto_path"])
-        foto_final = f"{BASE_URL}/uploads/{nome_arquivo}"
-
+    # NOVO-02: corrigido retorno
     return {
         "status":    "authenticated",
         "google_id": google_id,
@@ -183,23 +189,25 @@ async def update_profile(
     if cpf_valor and not validar_cpf(cpf_valor):
         raise HTTPException(status_code=400, detail="CPF inválido.")
 
-    # Validação de extensão de imagem
-    EXTENSOES_PERMITIDAS = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
-    content_type_map = {
-        'image/jpeg': '.jpg', 'image/png': '.png',
-        'image/gif': '.gif', 'image/webp': '.webp'
-    }
-    foto_path = None
+    # Upload da foto para o Supabase Storage (NOVO-07)
+    foto_url_atual = None
     if foto and foto.filename:
+        EXTENSOES_PERMITIDAS = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
+        content_type_map = {
+            'image/jpeg': '.jpg', 'image/png': '.png',
+            'image/gif': '.gif', 'image/webp': '.webp'
+        }
         ext = os.path.splitext(foto.filename)[1].lower()
         if ext not in EXTENSOES_PERMITIDAS:
             raise HTTPException(status_code=400, detail="Formato de imagem não permitido.")
-        # Força extensão baseada no content-type
         ext_final = content_type_map.get(foto.content_type, ext)
-        safe_name = f"{googleId}{ext_final}"
-        foto_path = os.path.join(UPLOAD_DIR, safe_name)
-        with open(foto_path, "wb") as buffer:
-            shutil.copyfileobj(foto.file, buffer)
+        bucket_path = f"avatars/{googleId}{ext_final}"
+        foto_bytes = await foto.read()
+        supabase.storage.from_("avatars").upload(
+            bucket_path, foto_bytes,
+            file_options={"content-type": foto.content_type, "upsert": "true"}
+        )
+        foto_url_atual = supabase.storage.from_("avatars").get_public_url(bucket_path)
 
     update_data = {
         "bio": perfil_json.get('bio'),
@@ -208,17 +216,12 @@ async def update_profile(
         "data_nasc": data_nasc,
         "nick": perfil_json.get('nick')
     }
-    if foto_path:
-        update_data["foto_path"] = foto_path
+    if foto_url_atual:
+        update_data["foto_url"] = foto_url_atual
 
     supabase.table("perfis").update(update_data).eq("google_id", googleId).execute()
 
-    foto_url = None
-    if foto_path:
-        nome_arquivo = os.path.basename(foto_path)
-        foto_url = f"{BASE_URL}/uploads/{nome_arquivo}"
-
-    return {"status": "Perfil salvo com sucesso!", "foto_url": foto_url}
+    return {"status": "Perfil salvo com sucesso!", "foto_url": foto_url_atual}
 
 @app.get("/get-profile/{google_id}")
 async def get_profile(google_id: str):
@@ -227,13 +230,9 @@ async def get_profile(google_id: str):
         return {}
     
     data = res_profile.data[0]
-    if data.get("foto_path"):
-        nome_arquivo = os.path.basename(data["foto_path"])
-        data["foto_url"] = f"{BASE_URL}/uploads/{nome_arquivo}"
-
-    res_hist = supabase.table("historico").select("*").eq("google_id", google_id).order("data", desc=True).execute()
+    # NOVO-09: usar created_at em vez de data
+    res_hist = supabase.table("historico").select("*").eq("google_id", google_id).order("created_at", desc=True).execute()
     data['historico'] = res_hist.data
-
     return data
 
 @app.post("/registrar-jogo")
@@ -281,7 +280,7 @@ async def registrar_jogo(payload: RegistrarJogoPayload):
     }
 
 # ================================================================
-# ENGINE DE DAMAS (com otimização e multi-captura)
+# ENGINE DE DAMAS (com correção da recursão - NOVO-05)
 # ================================================================
 def algebraic_to_index(coord: str) -> Tuple[int, int]:
     col = ord(coord[0].upper()) - ord('A')
@@ -323,15 +322,12 @@ class DamasEngine:
                     continue
                 is_dama = peca.isupper()
                 candidatos = set()
-                # Direções diagonais
                 for dr, dc in [(-1,-1), (-1,1), (1,-1), (1,1)]:
                     if is_dama and regras == "brasileira":
-                        # Dama: varre toda a diagonal
                         nr, nc = r + dr, c + dc
                         while 0 <= nr < 8 and 0 <= nc < 8:
                             candidatos.add((nr, nc))
                             if board[nr][nc] != '.':
-                                # Pode capturar a peça adversária
                                 nr2, nc2 = nr + dr, nc + dc
                                 if 0 <= nr2 < 8 and 0 <= nc2 < 8 and board[nr2][nc2] == '.':
                                     candidatos.add((nr2, nc2))
@@ -339,21 +335,19 @@ class DamasEngine:
                             nr += dr
                             nc += dc
                     else:
-                        # Peça comum ou dama americana: máximo 2 casas
                         for dist in [1, 2]:
                             nr, nc = r + dr*dist, c + dc*dist
                             if 0 <= nr < 8 and 0 <= nc < 8:
                                 candidatos.add((nr, nc))
-                # Validar cada candidato
                 for nr, nc in candidatos:
-                    ok, _, _ = DamasEngine.validar_e_mover(board, r, c, nr, nc, player, regras)
+                    # NOVO-05: passa continue_capture=True para evitar recursão infinita
+                    ok, _, _ = DamasEngine.validar_e_mover(board, r, c, nr, nc, player, regras, continue_capture=True)
                     if ok:
                         mov = ((r, c), (nr, nc))
                         if abs(nr - r) >= 2:
                             capturas.append(mov)
                         else:
                             movimentos.append(mov)
-        # Captura obrigatória
         return capturas if capturas else movimentos
 
     @staticmethod
@@ -381,7 +375,7 @@ class DamasEngine:
             best = -float('inf')
             for mov in movimentos:
                 (rf, cf), (rt, ct) = mov
-                _, nb, _ = DamasEngine.validar_e_mover(board, rf, cf, rt, ct, "b", regras)
+                _, nb, _ = DamasEngine.validar_e_mover(board, rf, cf, rt, ct, "b", regras, continue_capture=True)
                 ev, _    = DamasEngine.minimax(nb, profundidade-1, alpha, beta, False, regras)
                 if ev > best: best, melhor = ev, mov
                 alpha = max(alpha, ev)
@@ -391,7 +385,7 @@ class DamasEngine:
             best = float('inf')
             for mov in movimentos:
                 (rf, cf), (rt, ct) = mov
-                _, nb, _ = DamasEngine.validar_e_mover(board, rf, cf, rt, ct, "w", regras)
+                _, nb, _ = DamasEngine.validar_e_mover(board, rf, cf, rt, ct, "w", regras, continue_capture=True)
                 ev, _    = DamasEngine.minimax(nb, profundidade-1, alpha, beta, True, regras)
                 if ev < best: best, melhor = ev, mov
                 beta = min(beta, ev)
@@ -463,13 +457,11 @@ class DamasEngine:
             elif regras == "brasileira":
                 caminho = []
                 cr, cc = r_from + sr, c_from + sc
-                capturadas = []
                 while cr != r_to:
                     if board[cr][cc] != ".":
                         caminho.append((cr, cc, board[cr][cc]))
                     cr += sr
                     cc += sc
-                # Verifica captura única (apenas uma peça no caminho)
                 if len(caminho) == 0:
                     nb = [row[:] for row in board]
                     nb[r_from][c_from] = "."
@@ -483,9 +475,7 @@ class DamasEngine:
                     nb[r_from][c_from] = "."
                     nb[rcap][ccap] = "."
                     nb[r_to][c_to] = peca
-                    # Verifica se há captura múltipla para continuar
                     if not continue_capture:
-                        # Simula continuação para ver se a mesma peça pode capturar novamente
                         temp_nb = [row[:] for row in nb]
                         novas_capturas = DamasEngine.obter_todos_movimentos_validos(temp_nb, player, regras)
                         for mov in novas_capturas:
@@ -498,7 +488,7 @@ class DamasEngine:
         return False, board, "Movimento não suportado."
 
 # ================================================================
-# GERENCIADOR DE SALAS
+# GERENCIADOR DE SALAS E WEBSOCKETS (inalterado, exceto chamadas com continue_capture)
 # ================================================================
 class GerenciadorSalas:
     def __init__(self):
@@ -550,7 +540,6 @@ async def websocket_endpoint(websocket: WebSocket, game_id: str, player_color: s
                     partida["board"], rf, cf, rt, ct, player_color, partida["regras"])
                 if ok:
                     partida["board"] = nb
-                    # Se for multi-captura, não troca o turno
                     if motivo == "MULTI_CAPTURE":
                         await salas.broadcast(game_id, {
                             "type": "update", "board": nb,
@@ -629,7 +618,7 @@ async def websocket_ia_endpoint(websocket: WebSocket, game_id: str):
                     _, mov = DamasEngine.minimax(p["board"], 4, -float('inf'), float('inf'), True, p["regras"])
                     if mov:
                         (irf, icf), (irt, ict) = mov
-                        _, p["board"], _ = DamasEngine.validar_e_mover(p["board"], irf, icf, irt, ict, "b", p["regras"])
+                        _, p["board"], _ = DamasEngine.validar_e_mover(p["board"], irf, icf, irt, ict, "b", p["regras"], continue_capture=True)
                     p["turn"] = "w"
                     venc = DamasEngine.verificar_fim_de_jogo(p["board"], p["regras"])
                     if venc:
@@ -649,5 +638,4 @@ async def websocket_ia_endpoint(websocket: WebSocket, game_id: str):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 6500))
-    # Em produção, use reload=False conforme instruções (Procfile)
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)

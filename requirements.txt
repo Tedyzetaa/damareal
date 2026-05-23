@@ -5,3 +5,4 @@ google-auth==2.29.0
 python-dotenv==1.0.1
 requests==2.31.0
 slowapi==0.1.9
+supabase==2.4.6

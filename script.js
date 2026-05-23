@@ -11,7 +11,7 @@ let capturedByWhite = 0;
 let capturedByBlack = 0;
 let partidaIdAtual    = null;
 let partidaRegistrada = false;
-let minhaCorAtual   = 'w';   // BUG-07: estado global da cor
+let minhaCorAtual   = 'w';
 
 let userProfile = {
     googleId:      null,
@@ -24,7 +24,8 @@ let userProfile = {
 };
 
 let historicoJogos = [];
-// BUG-01: API dinâmica conforme ambiente
+
+// API dinâmica conforme ambiente
 const API = window.location.hostname === 'localhost'
     ? 'http://localhost:6500'
     : 'https://damareal1-2ml7.onrender.com';
@@ -46,7 +47,7 @@ function showToast(msg, type = 'info', duration = 3500) {
 }
 
 // ============================================================
-// HEALTH CHECK (MELHORIA-01)
+// HEALTH CHECK (NOVO-08: chamado no load)
 // ============================================================
 async function healthCheck() {
     showToast('Conectando ao servidor (pode levar ~30s)...', 'info', 8000);
@@ -125,12 +126,12 @@ function renderBoard() {
 }
 
 // ============================================================
-// CLIQUE NO TABULEIRO (BUG-07 corrigido)
+// CLIQUE NO TABULEIRO
 // ============================================================
 function handleSquareClick(r, c) {
     if (!meuTurno) return;
     const peca = currentBoard[r] ? currentBoard[r][c] : '.';
-    const minhaCor = minhaCorAtual;  // usa estado global
+    const minhaCor = minhaCorAtual;
     if (!selectedSquare) {
         if (peca !== '.' && peca.toLowerCase() === minhaCor) {
             selectedSquare = { row: r, col: c };
@@ -192,7 +193,7 @@ function renderCaptureDots() {
 }
 
 // ============================================================
-// STATUS / INDICADOR (MELHORIA-07)
+// STATUS / INDICADOR
 // ============================================================
 function atualizarStatus(turno, ehMeuTurno, modo) {
     const ind  = document.getElementById('turnIndicator');
@@ -210,7 +211,7 @@ function atualizarStatus(turno, ehMeuTurno, modo) {
 }
 
 // ============================================================
-// WEBSOCKET HELPERS (inclui onclose BUG-08)
+// WEBSOCKET HELPERS
 // ============================================================
 function onMensagemServidor(data, minhaCor) {
     if (data.type === 'init' || data.type === 'update') {
@@ -220,13 +221,11 @@ function onMensagemServidor(data, minhaCor) {
         lastBoard    = currentBoard.map(r => [...r]);
         currentBoard = data.board;
         meuTurno     = (data.turn === minhaCor);
-        // Ordem correta: renderBoard primeiro, depois status (MELHORIA-07)
         renderBoard();
         atualizarStatus(data.turn, meuTurno, modoAtual);
         if (data.alerta) showToast(data.alerta, 'info');
         if (data.must_continue) {
             showToast('Captura múltipla! Continue movendo a mesma peça.', 'info', 3000);
-            // Opcional: destacar a peça que deve continuar
             selectedSquare = { row: data.piece[0], col: data.piece[1] };
             renderBoard();
         }
@@ -256,7 +255,7 @@ function jogarContraIA() {
     lastBoard = null;
     partidaIdAtual = null;
     partidaRegistrada = false;
-    minhaCorAtual = 'w';   // BUG-07
+    minhaCorAtual = 'w';
     document.getElementById('playerColor').value = 'w';
     if (ws) ws.close();
     const gameId = 'ia_room_' + Math.floor(Math.random() * 99999);
@@ -264,7 +263,6 @@ function jogarContraIA() {
     ws = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/ia/${gameId}`);
     ws.onopen    = () => { mudarTela('screenGame'); renderizarCoordenadas(); renderCaptureDots(); showToast('Conectado! Boa sorte.', 'success'); };
     ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), 'w');
-    // BUG-08: handler onclose
     ws.onclose = (event) => {
         if (event.code !== 1000) {
             showToast('Conexão com o servidor perdida. Tente novamente.', 'error', 5000);
@@ -292,7 +290,7 @@ function conectarServidor() {
     if (!gameId) { showToast('Informe o ID da sala.', 'error'); return; }
     capturedByWhite = 0; capturedByBlack = 0; lastBoard = null;
     partidaIdAtual = null; partidaRegistrada = false;
-    minhaCorAtual = color;   // BUG-07
+    minhaCorAtual = color;
     if (ws) ws.close();
     const wsProtocol = API.startsWith('https') ? 'wss' : 'ws';
     ws = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/partida/${gameId}/${color}`);
@@ -367,14 +365,14 @@ function fecharModal() {
 }
 
 // ============================================================
-// REGISTRAR JOGO NO BACKEND (tipo normalizado)
+// REGISTRAR JOGO NO BACKEND
 // ============================================================
 async function registrarJogoNoServidor(resultado, valorAposta = 0) {
     if (!userProfile.googleId) return;
     if (partidaRegistrada) return;
     partidaRegistrada = true;
     let tipoEnvio = modoAtual || 'online';
-    if (tipoEnvio === 'apostada') tipoEnvio = 'aposta';   // BUG-05 normalizado
+    if (tipoEnvio === 'apostada') tipoEnvio = 'aposta';
     const payload = {
         googleId:   userProfile.googleId,
         tipo:       tipoEnvio,
@@ -431,7 +429,6 @@ function inicializarBotaoGoogle() {
 }
 
 async function handleCredentialResponse(response) {
-    // Salva no localStorage para persistir entre fechamento de abas
     localStorage.setItem('dr_credential', response.credential);
     await processarLogin(response.credential);
 }
@@ -445,7 +442,6 @@ async function processarLogin(token) {
         });
 
         if (!res.ok) {
-            // Se o token expirou ou deu erro, limpa o lixo
             localStorage.removeItem('dr_credential');
             return;
         }
@@ -463,7 +459,7 @@ async function processarLogin(token) {
 
         showToast(`Bem-vindo, ${nomeExibido}!`, 'success');
         await carregarPerfilDoServidor(userData.google_id);
-        await healthCheck();
+        // healthCheck removido daqui (NOVO-08)
     } catch (err) {
         console.error("Erro no processamento do login:", err);
     }
@@ -499,7 +495,7 @@ async function carregarPerfilDoServidor(googleId) {
             tipo:      h.tipo,
             resultado: h.resultado,
             valor:     h.valor,
-            data:      new Date(h.data).toLocaleDateString('pt-BR')
+            data:      new Date(h.created_at || h.data).toLocaleDateString('pt-BR')
         }));
         renderHistorico();
     } catch (e) {
@@ -569,7 +565,6 @@ function verificarIdade(dataNasc) {
     return idade >= 18;
 }
 
-// MELHORIA-08: togglePrivacy corrigido
 function togglePrivacy(campo) {
     userProfile.privacidade[campo] = !userProfile.privacidade[campo];
     const estado = userProfile.privacidade[campo] ? 'Privado' : 'Público';
@@ -621,6 +616,7 @@ async function salvarPerfil(event) {
             }
             if (data.foto_url) {
                 document.getElementById('userPicture').src = data.foto_url;
+                document.getElementById('previewFoto').src = data.foto_url;
             }
         } else {
             const err = await res.json();
@@ -635,18 +631,18 @@ async function salvarPerfil(event) {
 }
 
 // ============================================================
-// INICIALIZAÇÃO
+// INICIALIZAÇÃO (NOVO-08 e NOVO-01)
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
     inicializarBotaoGoogle();
-    verificarLoginPersistente();
+    healthCheck();                // Acorda o servidor imediatamente
+    verificarLoginPersistente(); // Tenta relogar após warm-up
 });
 
+// NOVO-01 + NOVO-06: Persistência apenas com localStorage
 async function verificarLoginPersistente() {
-    const { data: { session } } = await _supabase.auth.getSession();
-    if (session) {
-        console.log("Sessão ativa encontrada...");
-        // Envia o access_token para o seu backend validar e sincronizar
-        await processarLogin(session.access_token);
+    const credential = localStorage.getItem('dr_credential');
+    if (credential) {
+        await processarLogin(credential);
     }
 }
