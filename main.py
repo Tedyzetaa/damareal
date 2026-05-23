@@ -315,14 +315,65 @@ class DamasEngine:
         return board
 
     @staticmethod
-    def verificar_fim_de_jogo(board: List[List[str]], regras: str) -> Optional[str]:
-        movs_w = DamasEngine.obter_todos_movimentos_validos(board, "w", regras)
-        movs_b = DamasEngine.obter_todos_movimentos_validos(board, "b", regras)
-        pecas_w = sum(1 for row in board for cell in row if cell.lower() == 'w')
-        pecas_b = sum(1 for row in board for cell in row if cell.lower() == 'b')
-        if pecas_w == 0 or not movs_w: return "b"
-        if pecas_b == 0 or not movs_b: return "w"
-        return None
+    def verificar_fim_de_jogo(tabuleiro: List[List[str]], regras: str) -> Optional[str]:
+        """
+        Retorna 'w' se as brancas venceram, 'b' se as pretas venceram, ou None se o jogo continua.
+        O jogo termina se um dos lados não tiver nenhuma peça OU não tiver nenhum movimento válido (captura ou andar).
+        """
+        brancas_vivas = False
+        pretas_vivas = False
+        
+        # 1. Varredura rápida para ver se alguém ficou totalmente sem peças
+        for linha in tabuleiro:
+            for p in linha:
+                if p.lower() == 'w': brancas_vivas = True
+                if p.lower() == 'b': pretas_vivas = True
+                
+        if not brancas_vivas: return "b"  # Pretas ganham
+        if not pretas_vivas: return "w"   # Brancas ganham
+
+        # 2. Verificar se as Brancas têm movimentos ou capturas disponíveis
+        brancas_tem_movimento = False
+        for r in range(8):
+            for c in range(8):
+                if tabuleiro[r][c].lower() == 'w':
+                    # Se tem captura obrigatória ou qualquer movimento válido, ela ainda joga
+                    if DamasEngine.tem_capturas_obrigatorias_da_peca(tabuleiro, r, c, 'w', regras):
+                        brancas_tem_movimento = True
+                        break
+                    # Verifica também movimentos simples (passando continue_capture=False para testar passos)
+                    for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                        rt, ct = r + dr, c + dc
+                        if 0 <= rt < 8 and 0 <= ct < 8:
+                            # Teste rápido se o motor aceita o movimento simples
+                            sucesso, *_ = DamasEngine.validar_e_mover(tabuleiro, r, c, rt, ct, 'w', regras)
+                            if sucesso:
+                                brancas_tem_movimento = True
+                                break
+            if brancas_tem_movimento: break
+
+        if not brancas_tem_movimento: return "b"
+
+        # 3. Verificar se as Pretas (IA) têm movimentos ou capturas disponíveis
+        pretas_tem_movimento = False
+        for r in range(8):
+            for c in range(8):
+                if tabuleiro[r][c].lower() == 'b':
+                    if DamasEngine.tem_capturas_obrigatorias_da_peca(tabuleiro, r, c, 'b', regras):
+                        pretas_tem_movimento = True
+                        break
+                    for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                        rt, ct = r + dr, c + dc
+                        if 0 <= rt < 8 and 0 <= ct < 8:
+                            sucesso, *_ = DamasEngine.validar_e_mover(tabuleiro, r, c, rt, ct, 'b', regras)
+                            if sucesso:
+                                pretas_tem_movimento = True
+                                break
+            if pretas_tem_movimento: break
+
+        if not pretas_tem_movimento: return "w"
+
+        return None  # O jogo segue normalmente
 
     @staticmethod
     def tem_capturas_obrigatorias_da_peca(board: List[List[str]], r: int, c: int, cor: str, regras: str) -> bool:
