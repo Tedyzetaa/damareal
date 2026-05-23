@@ -15,6 +15,9 @@ from fastapi.staticfiles import StaticFiles          # ← NOVO: serve fotos de 
 from pydantic import BaseModel, Field, validator
 from google.oauth2 import id_token
 from google.auth.transport import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI(title="Damas Real - Server-Side Engine com IA")
 
@@ -136,7 +139,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GOOGLE_CLIENT_ID = "392676701496-c3tuhektac3snndmob3jb12vbbsifagl.apps.googleusercontent.com"
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 
 
 # ================================================================
