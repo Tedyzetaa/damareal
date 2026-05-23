@@ -722,94 +722,81 @@ async def websocket_ia_endpoint(websocket: WebSocket, game_id: str):
                     "type": "update", "board": p["board"], "turn": p["turn"], "regras": p["regras"]
                 }))
                 continue
-            elif msg.get("type") == "move" and p["turn"] == "w":
-                irf, icf = algebraic_to_index(msg["from"])
-                irt, ict = algebraic_to_index(msg["to"])
+        elif msg.get("type") == "move":
+            irf, icf = algebraic_to_index(msg["from"])
+            irt, ict = algebraic_to_index(msg["to"])
+            
+            # 1. VALIDAÇÃO DO JOGADOR (BRANCAS)
+            tem_que_comer_w = DamasEngine.jogador_tem_capturas_possiveis(p["board"], "w", p["regras"])
+            movimento_eh_captura_w = abs(irf - irt) >= 2
+            
+            if tem_que_comer_w and not movimento_eh_captura_w:
+                await websocket.send_text(json.dumps({
+                    "type": "invalid_move", 
+                    "message": "Movimento inválido! É obrigado a capturar uma peça adversária."
+                }))
+                continue
                 
-                # 1. VALIDAÇÃO DO JOGADOR (BRANCAS)
-                tem_que_comer_w = DamasEngine.jogador_tem_capturas_possiveis(p["board"], "w", p["regras"])
-                movimento_eh_captura_w = abs(irf - irt) >= 2
+            sucesso, resultado_ou_motivo, mais_capturas = DamasEngine.validar_e_mover(
+                p["board"], irf, icf, irt, ict, "w", p["regras"]
+            )
+            
+            if sucesso:
+                p["board"] = resultado_ou_motivo
+                venc = DamasEngine.verificar_fim_de_jogo(p["board"], p["regras"])
                 
-                if tem_que_comer_w and not movimento_eh_captura_w:
+                if venc:
                     await websocket.send_text(json.dumps({
-                        "type": "invalid_move", 
-                        "message": "Movimento inválido! Você é obrigado a capturar uma peça."
+                        "type": "game_over", "winner": venc, "partida_id": p["partida_id"], "board": p["board"]
                     }))
                     continue
-                    
-                sucesso, resultado_ou_motivo, motivo_str = DamasEngine.validar_e_mover(
-                    p["board"], irf, icf, irt, ict, "w", p["regras"]
-                )
                 
-                if sucesso:
-                    p["board"] = resultado_ou_motivo
+                # Se o jogador capturou e ainda pode continuar no combo, mantém o turno dele
+                if mais_capturas and movimento_eh_captura_w:
+                    await websocket.send_text(json.dumps({
+                        "type": "update", "board": p["board"], "turn": "w", "regras": p["regras"]
+                    }))
+                else:
+                    # PASSA O TURNO PARA A IA (PRETAS)
+                    p["turn"] = "b"
+                    await websocket.send_text(json.dumps({
+                        "type": "update", "board": p["board"], "turn": "b", "regras": p["regras"]
+                    }))
+                    
+                    # Delay para dar sensação de pensamento da IA
+                    await asyncio.sleep(0.5)
+                    
+                    # 2. DECISÃO DA IA (PRETAS)
+                    # Primeiro, verifica se a IA tem alguma captura obrigatória
+                    jogadas_ia = DamasEngine.obter_capturas_possiveis_do_jogador(p["board"], "b", p["regras"])
+                    
+                    # Se não tiver nenhuma captura obrigatória, ela pode andar para a frente
+                    if not jogadas_ia:
+                        jogadas_ia = DamasEngine.obter_movimentos_simples_do_jogador(p["board"], "b", p["regras"])
+                    
+                    if jogadas_ia:
+                        # Escolhe uma jogada válida (pode usar random para testar rápido ou integrar com o minimax)
+                        # Para garantir que ela mexe agora mesmo, vamos pegar uma jogada válida direta:
+                        mov_escolhido = random.choice(jogadas_ia)
+                        
+                        (irf_b, icf_b), (irt_b, ict_b) = mov_escolhido
+                        _, novo_tabuleiro_b, _ = DamasEngine.validar_e_mover(p["board"], irf_b, icf_b, irt_b, ict_b, "b", p["regras"])
+                        p["board"] = novo_tabuleiro_b
+                    
+                    # Devolve o turno para as Brancas
+                    p["turn"] = "w"
                     venc = DamasEngine.verificar_fim_de_jogo(p["board"], p["regras"])
                     
                     if venc:
                         await websocket.send_text(json.dumps({
                             "type": "game_over", "winner": venc, "partida_id": p["partida_id"], "board": p["board"]
                         }))
-                        continue
-                    
-                    # Se o jogador ainda tem capturas no combo (sequência), ele continua. Se não, passa o turno.
-                    if motivo_str == "MULTI_CAPTURE":
+                    else:
                         await websocket.send_text(json.dumps({
                             "type": "update", "board": p["board"], "turn": "w", "regras": p["regras"]
                         }))
-                    else:
-                        # PASSA O TURNO PARA A IA (PRETAS)
-                        p["turn"] = "b"
-                        await websocket.send_text(json.dumps({
-                            "type": "update", "board": p["board"], "turn": "b", "regras": p["regras"]
-                        }))
-                        
-                        # Pequeno delay para parecer que a IA está a pensar
-                        await asyncio.sleep(0.4)
-                        
-                        # 2. TURNO DA IA (PRETAS)
-                        # Forçamos o minimax a calcular a melhor jogada
-                        _, mov = DamasEngine.minimax(p["board"], 4, -float('inf'), float('inf'), True, p["regras"])
-                        
-                        if mov:
-                            i_from, i_to = mov
-                            # Se a IA tem capturas obrigatórias, vamos garantir que o minimax escolheu uma captura
-                            tem_que_comer_b = DamasEngine.jogador_tem_capturas_possiveis(p["board"], "b", p["regras"])
-                            mov_b_eh_captura = abs(i_from[0] - i_to[0]) >= 2
-                            
-                            # Se por algum motivo o minimax falhou em priorizar a captura, forçamos uma lista de capturas
-                            if tem_que_comer_b and not mov_b_eh_captura:
-                                # Fallback de segurança: pega qualquer movimento que seja uma captura válida
-                                movimentos_ia_validos = []
-                                for r in range(8):
-                                    for c in range(8):
-                                        if p["board"][r][c].lower() == 'b':
-                                            for dr, dc in [(-2,-2), (-2,2), (2,-2), (2,2)]:
-                                                rt, ct = r + dr, c + dc
-                                                if 0 <= rt < 8 and 0 <= ct < 8:
-                                                    suc, b_test, _ = DamasEngine.validar_e_mover(p["board"], r, c, rt, ct, "b", p["regras"])
-                                                    if suc:
-                                                        movimentos_ia_validos.append(((r, c), (rt, ct)))
-                                if movimentos_ia_validos:
-                                    mov = random.choice(movimentos_ia_validos)
-                            
-                            # Executa o movimento da IA
-                            (irf_b, icf_b), (irt_b, ict_b) = mov
-                            _, p["board"], _ = DamasEngine.validar_e_mover(p["board"], irf_b, icf_b, irt_b, ict_b, "b", p["regras"])
-                        
-                        # Devolve o turno para as Brancas
-                        p["turn"] = "w"
-                        venc = DamasEngine.verificar_fim_de_jogo(p["board"], p["regras"])
-                        
-                        if venc:
-                            await websocket.send_text(json.dumps({
-                                "type": "game_over", "winner": venc, "partida_id": p["partida_id"], "board": p["board"]
-                            }))
-                        else:
-                            await websocket.send_text(json.dumps({
-                                "type": "update", "board": p["board"], "turn": "w", "regras": p["regras"]
-                            }))
-                else:
-                    await websocket.send_text(json.dumps({"type": "invalid_move", "message": resultado_ou_motivo}))
+            else:
+                await websocket.send_text(json.dumps({"type": "invalid_move", "message": resultado_ou_motivo}))
     except WebSocketDisconnect:
         pass
 
