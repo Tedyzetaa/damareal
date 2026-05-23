@@ -1,6 +1,7 @@
-flask
+fastapi
+uvicorn
+python-multipart
 flask-cors
 google-auth
 python-dotenv
-gunicorn
 requests
