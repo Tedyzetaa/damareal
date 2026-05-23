@@ -431,32 +431,41 @@ function inicializarBotaoGoogle() {
 }
 
 async function handleCredentialResponse(response) {
+    // Salva no localStorage para persistir entre fechamento de abas
+    localStorage.setItem('dr_credential', response.credential);
+    await processarLogin(response.credential);
+}
+
+async function processarLogin(token) {
     try {
-        sessionStorage.setItem('dr_credential', response.credential);
         const res = await fetch(`${API}/auth/google`, {
             method:  'POST',
             headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify({ token: response.credential })
+            body:    JSON.stringify({ token: token })
         });
+
         if (!res.ok) {
-            showToast('Erro ao validar credenciais do Google.', 'error');
+            // Se o token expirou ou deu erro, limpa o lixo
+            localStorage.removeItem('dr_credential');
             return;
         }
+
         const userData = await res.json();
         userProfile.googleId = userData.google_id;
+
         document.getElementById('googleBtnContainer').style.display = 'none';
         const ui = document.getElementById('userInfo');
         ui.style.display = 'flex';
+
         const nomeExibido = userData.nick || userData.name;
         document.getElementById('userName').textContent = nomeExibido;
         document.getElementById('userPicture').src      = userData.picture;
+
         showToast(`Bem-vindo, ${nomeExibido}!`, 'success');
         await carregarPerfilDoServidor(userData.google_id);
-        // Health check após login (MELHORIA-01)
         await healthCheck();
     } catch (err) {
-        showToast('Não foi possível comunicar com o servidor.', 'error');
-        console.error(err);
+        console.error("Erro no processamento do login:", err);
     }
 }
 
@@ -500,7 +509,7 @@ async function carregarPerfilDoServidor(googleId) {
 
 function executarLogout() {
     google.accounts.id.disableAutoSelect();
-    sessionStorage.removeItem('dr_credential');
+    localStorage.removeItem('dr_credential');
     userProfile = {
         googleId: null, nick: "", bio: "", telefone: "", cpf: "", dataNascimento: "",
         privacidade: { telefone: false, cpf: false }
@@ -630,4 +639,14 @@ async function salvarPerfil(event) {
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
     inicializarBotaoGoogle();
+    verificarLoginPersistente();
 });
+
+async function verificarLoginPersistente() {
+    const { data: { session } } = await _supabase.auth.getSession();
+    if (session) {
+        console.log("Sessão ativa encontrada...");
+        // Envia o access_token para o seu backend validar e sincronizar
+        await processarLogin(session.access_token);
+    }
+}

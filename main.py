@@ -4,9 +4,7 @@ import os
 import random
 import re
 import shutil
-import sqlite3
 import uuid
-from contextlib import contextmanager
 from datetime import date
 from typing import Dict, List, Optional, Tuple
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, File, UploadFile, Form, Request
@@ -16,6 +14,7 @@ from pydantic import BaseModel, Field, validator
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from dotenv import load_dotenv
+from supabase import create_client, Client
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -30,6 +29,11 @@ app = FastAPI(title="Damas Real - Server-Side Engine com IA")
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:6500")
 DB_PATH = os.environ.get("DB_PATH", "damas_real.db")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -63,79 +67,6 @@ app.add_middleware(
 # ================================================================
 # BANCO DE DADOS (com suporte a DB_PATH via env)
 # ================================================================
-@contextmanager
-def get_db():
-    """Conexão padrão com gerenciamento de transação automático."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    try:
-        yield conn
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-@contextmanager
-def get_db_exclusive():
-    """Conexão com autocommit para controle manual (apostas)."""
-    conn = sqlite3.connect(DB_PATH, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    try:
-        yield conn
-    finally:
-        conn.close()
-
-def setup_db():
-    with get_db() as conn:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS perfis (
-                google_id   TEXT PRIMARY KEY,
-                nome        TEXT,
-                email       TEXT,
-                nick        TEXT,
-                bio         TEXT,
-                telefone    TEXT,
-                cpf         TEXT,
-                data_nasc   TEXT,
-                saldo       REAL    NOT NULL DEFAULT 0.0,
-                foto_path   TEXT,
-                foto_url    TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS historico (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                partida_id   TEXT    UNIQUE,
-                google_id    TEXT    NOT NULL,
-                tipo         TEXT    NOT NULL,
-                resultado    TEXT    NOT NULL,
-                valor        REAL    NOT NULL DEFAULT 0.0,
-                delta_saldo  REAL    NOT NULL DEFAULT 0.0,
-                data         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (google_id) REFERENCES perfis(google_id)
-            );
-        """)
-        _migrar_colunas(conn)
-        conn.commit()
-
-def _migrar_colunas(conn):
-    colunas_existentes = {row[1] for row in conn.execute("PRAGMA table_info(perfis)")}
-    novas = {
-        "nome":     "ALTER TABLE perfis ADD COLUMN nome TEXT",
-        "email":    "ALTER TABLE perfis ADD COLUMN email TEXT",
-        "nick":     "ALTER TABLE perfis ADD COLUMN nick TEXT",
-        "foto_url": "ALTER TABLE perfis ADD COLUMN foto_url TEXT",
-    }
-    for col, sql in novas.items():
-        if col not in colunas_existentes:
-            conn.execute(sql)
-
-setup_db()
-
 # ================================================================
 # VALIDAÇÕES
 # ================================================================
@@ -198,30 +129,25 @@ async def auth_google(request: Request, payload: AuthToken):
         raise HTTPException(status_code=401, detail="Token inválido ou expirado.")
 
     google_id     = id_info['sub']
-    nome_google   = id_info.get('name', 'Jogador Real')
-    email_google  = id_info.get('email', '')
-    picture_google = id_info.get('picture', '')
 
-    with get_db() as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO perfis (google_id, nome, email, foto_url) VALUES (?, ?, ?, ?)",
-            (google_id, nome_google, email_google, picture_google)
-        )
-        conn.execute(
-            "UPDATE perfis SET nome = ?, email = ?, foto_url = ? WHERE google_id = ?",
-            (nome_google, email_google, picture_google, google_id)
-        )
-        conn.commit()
-        row = conn.execute(
-            "SELECT nick, saldo, foto_path FROM perfis WHERE google_id = ?",
-            (google_id,)
-        ).fetchone()
+    profile_data = {
+        "google_id": google_id,
+        "nome": id_info.get('name', 'Jogador Real'),
+        "email": id_info.get('email', ''),
+        "foto_url": id_info.get('picture', '')
+    }
 
-    nick  = row["nick"] if row and row["nick"] else None
-    saldo = row["saldo"] if row else 0.0
+    # upsert no Supabase
+    supabase.table("perfis").upsert(profile_data, on_conflict="google_id").execute()
 
-    foto_final = picture_google
-    if row and row["foto_path"]:
+    res = supabase.table("perfis").select("nick, saldo, foto_path").eq("google_id", google_id).execute()
+    row = res.data[0] if res.data else None
+
+    nick  = row.get("nick") if row else None
+    saldo = row.get("saldo", 0.0) if row else 0.0
+
+    foto_final = profile_data["foto_url"]
+    if row and row.get("foto_path"):
         nome_arquivo = os.path.basename(row["foto_path"])
         foto_final = f"{BASE_URL}/uploads/{nome_arquivo}"
 
@@ -275,28 +201,17 @@ async def update_profile(
         with open(foto_path, "wb") as buffer:
             shutil.copyfileobj(foto.file, buffer)
 
-    with get_db() as conn:
-        conn.execute("INSERT OR IGNORE INTO perfis (google_id) VALUES (?)", (googleId,))
-        if foto_path:
-            conn.execute(
-                """UPDATE perfis
-                      SET bio = ?, telefone = ?, cpf = ?, data_nasc = ?,
-                          nick = ?, foto_path = ?
-                    WHERE google_id = ?""",
-                (perfil_json.get('bio'), perfil_json.get('telefone'),
-                 cpf_valor, data_nasc,
-                 perfil_json.get('nick'), foto_path, googleId)
-            )
-        else:
-            conn.execute(
-                """UPDATE perfis
-                      SET bio = ?, telefone = ?, cpf = ?, data_nasc = ?, nick = ?
-                    WHERE google_id = ?""",
-                (perfil_json.get('bio'), perfil_json.get('telefone'),
-                 cpf_valor, data_nasc,
-                 perfil_json.get('nick'), googleId)
-            )
-        conn.commit()
+    update_data = {
+        "bio": perfil_json.get('bio'),
+        "telefone": perfil_json.get('telefone'),
+        "cpf": cpf_valor,
+        "data_nasc": data_nasc,
+        "nick": perfil_json.get('nick')
+    }
+    if foto_path:
+        update_data["foto_path"] = foto_path
+
+    supabase.table("perfis").update(update_data).eq("google_id", googleId).execute()
 
     foto_url = None
     if foto_path:
@@ -307,81 +222,63 @@ async def update_profile(
 
 @app.get("/get-profile/{google_id}")
 async def get_profile(google_id: str):
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM perfis WHERE google_id = ?", (google_id,)
-        ).fetchone()
-        if not row:
-            return {}
-        data = dict(row)
-        if data.get("foto_path"):
-            nome_arquivo = os.path.basename(data["foto_path"])
-            data["foto_url"] = f"{BASE_URL}/uploads/{nome_arquivo}"
-        historico = conn.execute(
-            """SELECT tipo, resultado, valor, delta_saldo, data
-                 FROM historico
-                WHERE google_id = ?
-             ORDER BY data DESC""",
-            (google_id,)
-        ).fetchall()
-        data['historico'] = [dict(r) for r in historico]
+    res_profile = supabase.table("perfis").select("*").eq("google_id", google_id).execute()
+    if not res_profile.data:
+        return {}
+    
+    data = res_profile.data[0]
+    if data.get("foto_path"):
+        nome_arquivo = os.path.basename(data["foto_path"])
+        data["foto_url"] = f"{BASE_URL}/uploads/{nome_arquivo}"
+
+    res_hist = supabase.table("historico").select("*").eq("google_id", google_id).order("data", desc=True).execute()
+    data['historico'] = res_hist.data
+
     return data
 
 @app.post("/registrar-jogo")
 async def registrar_jogo(payload: RegistrarJogoPayload):
     partida_id = payload.partida_id or str(uuid.uuid4())
 
-    with get_db_exclusive() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+    # Verifica se partida já existe
+    res_check = supabase.table("historico").select("id").eq("partida_id", partida_id).execute()
+    if res_check.data:
+        return {"status": "already_registered", "partida_id": partida_id}
 
-        ja_existe = conn.execute(
-            "SELECT id FROM historico WHERE partida_id = ?", (partida_id,)
-        ).fetchone()
-        if ja_existe:
-            conn.rollback()
-            return {"status": "already_registered", "partida_id": partida_id}
+    # Busca saldo
+    res_user = supabase.table("perfis").select("saldo").eq("google_id", payload.googleId).execute()
+    if not res_user.data:
+        raise HTTPException(status_code=404, detail="Jogador não encontrado.")
 
-        row = conn.execute(
-            "SELECT saldo FROM perfis WHERE google_id = ?", (payload.googleId,)
-        ).fetchone()
-        if not row:
-            conn.rollback()
-            raise HTTPException(status_code=404, detail="Jogador não encontrado.")
+    saldo_atual = res_user.data[0]["saldo"]
+    delta = 0.0
+    if payload.resultado == "vitoria":
+        delta = +payload.valor
+    elif payload.resultado == "derrota":
+        delta = -payload.valor
+        if saldo_atual + delta < 0:
+            raise HTTPException(status_code=422, detail=f"Saldo insuficiente. R$ {saldo_atual:.2f}")
 
-        saldo_atual = row["saldo"]
-        delta = 0.0
-        if payload.resultado == "vitoria":
-            delta = +payload.valor
-        elif payload.resultado == "derrota":
-            delta = -payload.valor
-            if saldo_atual + delta < 0:
-                conn.rollback()
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Saldo insuficiente. Saldo atual: R$ {saldo_atual:.2f}"
-                )
+    # Insere histórico
+    supabase.table("historico").insert({
+        "partida_id": partida_id,
+        "google_id": payload.googleId,
+        "tipo": payload.tipo,
+        "resultado": payload.resultado,
+        "valor": payload.valor,
+        "delta_saldo": delta
+    }).execute()
 
-        conn.execute(
-            """INSERT INTO historico
-                   (partida_id, google_id, tipo, resultado, valor, delta_saldo)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (partida_id, payload.googleId, payload.tipo,
-             payload.resultado, payload.valor, delta)
-        )
+    # Atualiza saldo
+    if delta != 0.0:
+        supabase.table("perfis").update({"saldo": saldo_atual + delta}).eq("google_id", payload.googleId).execute()
 
-        if delta != 0.0:
-            conn.execute(
-                "UPDATE perfis SET saldo = saldo + ? WHERE google_id = ?",
-                (delta, payload.googleId)
-            )
-
-        conn.commit()
-        return {
-            "status":     "registered",
-            "partida_id": partida_id,
-            "delta":      delta,
-            "novo_saldo": round(saldo_atual + delta, 2)
-        }
+    return {
+        "status": "registered",
+        "partida_id": partida_id,
+        "delta": delta,
+        "novo_saldo": round(saldo_atual + delta, 2)
+    }
 
 # ================================================================
 # ENGINE DE DAMAS (com otimização e multi-captura)
