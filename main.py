@@ -4,6 +4,7 @@ import os
 import random
 import re
 import uuid
+from contextlib import asynccontextmanager
 from datetime import date
 from typing import Dict, List, Optional, Tuple
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, File, UploadFile, Form, Request
@@ -19,8 +20,6 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 load_dotenv()
-
-app = FastAPI(title="Damas Real - Server-Side Engine com IA")
 
 # ================================================================
 # CONFIGURAÇÕES DE AMBIENTE
@@ -44,10 +43,24 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ================================================================
 def ensure_avatars_bucket():
     try:
+        # Tenta buscar o bucket existente
         supabase.storage.get_bucket("avatars")
+        print("Bucket 'avatars' já existe.")
     except Exception:
-        supabase.storage.create_bucket("avatars", {"public": True})
-ensure_avatars_bucket()
+        # Se ocorrer erro (provavelmente 404 porque não existe), então cria
+        try:
+            print("Criando bucket 'avatars'...")
+            supabase.storage.create_bucket("avatars", {"public": True})
+        except Exception as e:
+            print(f"Erro ao criar bucket: {e}")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # A lógica de inicialização vai aqui
+    ensure_avatars_bucket()
+    yield
+
+app = FastAPI(title="Damas Real - Server-Side Engine com IA", lifespan=lifespan)
 
 # ================================================================
 # RATE LIMITING
