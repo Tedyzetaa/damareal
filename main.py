@@ -711,4 +711,7 @@ async def websocket_ia_endpoint(websocket: WebSocket, game_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=6500, reload=True)
+    # O Render atribui uma porta dinâmica via variável de ambiente PORT.
+    # Caso não encontre (localmente), utiliza a 6500.
+    port = int(os.environ.get("PORT", 6500))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
