@@ -53,8 +53,7 @@ async function healthCheck() {
     try {
         const controller = new AbortController();
         const timeoutId  = setTimeout(() => controller.abort(), 60000);
-        const res        = await fetch(`${API}/health`, { signal: controller.signal });
-        clearTimeout(timeoutId);
+        const res        = await fetch(`${API}/
         if (res.ok) {
             showToast('Servidor pronto!', 'success', 2000);
         } else {
@@ -68,8 +67,7 @@ async function healthCheck() {
 function iniciarKeepalive() {
     setInterval(async () => {
         try {
-            await fetch(`${API}/health`, { method: 'GET' });
-        } catch (_) { /* silencioso */ }
+           
     }, 10 * 60 * 1000); // a cada 10 minutos
 }
 

@@ -416,9 +416,9 @@ salas = GerenciadorSalas()
 # ================================================================
 # ENDPOINTS REST
 # ================================================================
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
+@app.get("/ping")
+async def ping():
+    return {"ok": True}
 
 @app.post("/auth/google")
 @limiter.limit("10/minute")
