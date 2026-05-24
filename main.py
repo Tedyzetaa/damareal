@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, File, UploadFile, Form, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, File, UploadFile, Form, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from google.oauth2 import id_token
@@ -61,6 +61,17 @@ async def lifespan(app: FastAPI):
 # ================================================================
 app = FastAPI(title="Damas Real - Server-Side Engine com IA", lifespan=lifespan)
 
+@app.options("/update-profile")
+async def options_update_profile():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin":  "https://damareal1.vercel.app",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -76,8 +87,10 @@ app.add_middleware(
         "https://damareal1.vercel.app",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600,
 )
 
 # ================================================================

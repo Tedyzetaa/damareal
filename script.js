@@ -65,6 +65,14 @@ async function healthCheck() {
     }
 }
 
+function iniciarKeepalive() {
+    setInterval(async () => {
+        try {
+            await fetch(`${API}/health`, { method: 'GET' });
+        } catch (_) { /* silencioso */ }
+    }, 10 * 60 * 1000); // a cada 10 minutos
+}
+
 // ============================================================
 // NAVEGAÇÃO
 // ============================================================
@@ -959,6 +967,7 @@ async function salvarPerfil(event) {
 document.addEventListener('DOMContentLoaded', async () => {
     inicializarBotaoGoogle();
     await healthCheck();
+    iniciarKeepalive();
     verificarLoginPersistente();
 });
 
