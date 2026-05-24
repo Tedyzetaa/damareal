@@ -741,18 +741,14 @@ function inicializarBotaoGoogle() {
     google.accounts.id.initialize({
         client_id:             CONFIG.GOOGLE_CLIENT_ID,
         callback:              handleCredentialResponse,
-        auto_select:           true,
+        auto_select:           false,
         cancel_on_tap_outside: false,
+        use_fedcm_for_prompt:  true,
     });
     google.accounts.id.renderButton(
         document.getElementById('googleBtnContainer'),
-        { theme: 'filled_black', size: 'medium', type: 'standard', shape: 'pill', width: 200 }
+        { theme: 'filled_black', size: 'large', type: 'standard', shape: 'pill', width: 220 }
     );
-    google.accounts.id.prompt((notification) => {
-        if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-            console.info('Auto-login não disponível, exibindo botão.');
-        }
-    });
 }
 
 async function handleCredentialResponse(response) {
@@ -770,6 +766,8 @@ async function processarLogin(token) {
 
         if (!res.ok) {
             localStorage.removeItem('dr_credential');
+            document.getElementById('googleBtnContainer').style.display = 'block';
+            document.getElementById('userInfo').style.display = 'none';
             return;
         }
 
@@ -789,6 +787,8 @@ async function processarLogin(token) {
         await carregarPerfilDoServidor(userData.google_id);
     } catch (err) {
         console.error("Erro no processamento do login:", err);
+        document.getElementById('googleBtnContainer').style.display = 'block';
+        document.getElementById('userInfo').style.display = 'none';
     }
 }
 
@@ -962,11 +962,12 @@ async function salvarPerfil(event) {
 // ============================================================
 // INICIALIZAÇÃO
 // ============================================================
-document.addEventListener('DOMContentLoaded', async () => {
+document.addEventListener('DOMContentLoaded', () => {
     inicializarBotaoGoogle();
-    await healthCheck();
-    iniciarKeepalive();
     verificarLoginPersistente();
+
+    healthCheck();
+    iniciarKeepalive();
 });
 
 async function verificarLoginPersistente() {
