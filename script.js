@@ -170,7 +170,8 @@ function enviarMensagemChat() {
     ws.send(JSON.stringify({
         type: "chat",
         nick: nick,
-        text: text
+        text: text,
+        sender_id: userProfile.googleId
     }));
     input.value = "";
     input.focus();
@@ -183,17 +184,20 @@ function limparChat() {
     }
 }
 
-function renderMensagemChat(nick, text, timestamp) {
+function renderMensagemChat(nick, text, timestamp, senderId) {
     const container = document.getElementById('chatMessages');
     if (!container) return;
+
     // Remove a mensagem de "Nenhuma mensagem" se existir
     const emptyDiv = container.querySelector('.chat-empty');
-    if (emptyDiv && emptyDiv.style.display !== 'none') {
-        emptyDiv.style.display = 'none';
-    }
-    const isOwn = (nick === (userProfile.nick || document.getElementById('userName')?.textContent));
+    if (emptyDiv) emptyDiv.style.display = 'none';
+
+    const isOwn = senderId && userProfile.googleId
+        ? (senderId === userProfile.googleId)
+        : (nick === (userProfile.nick || document.getElementById('userName')?.textContent || ""));
+
     const messageDiv = document.createElement('div');
-    messageDiv.className = `chat-message ${isOwn ? 'chat-message--own' : ''}`;
+    messageDiv.className = `chat-message${isOwn ? ' chat-message--own' : ''}`;
     messageDiv.innerHTML = `
         <div class="chat-bubble">
             ${!isOwn ? `<span class="chat-nick">${escapeHtml(nick)}</span>` : ''}

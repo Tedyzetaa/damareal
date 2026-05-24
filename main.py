@@ -801,13 +801,14 @@ async def websocket_partida_endpoint(websocket: WebSocket, game_id: str, player_
             elif msg.get("type") == "chat":
                 nick = str(msg.get("nick", "Jogador"))[:30]
                 text = str(msg.get("text", ""))[:200].strip()
+                sender_id = str(msg.get("sender_id", ""))
                 if text:
                     await salas.broadcast(game_id, {
                         "type": "chat",
                         "nick": nick,
                         "text": text,
-                        "timestamp": datetime.now().strftime("%H:%M"),
-                        "game_id": game_id
+                        "sender_id": sender_id,
+                        "timestamp": datetime.now().strftime("%H:%M")
                     })
             elif msg.get("type") == "config_rules":
                 partida["regras"] = msg.get("regras", "brasileira")
