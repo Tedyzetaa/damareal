@@ -206,9 +206,6 @@ function adicionarMensagemChat(remetente, texto, isMe, timestamp) {
     }
 
     // Avatar
-    const avatarSrc = isMe
-        ? (document.getElementById('userPicture')?.src || '')
-        : (opponentPicture || `https://ui-avatars.com/api/?name=${encodeURIComponent(remetente)}&background=3a2210&color=c8963c&size=64`);
     const minhaFoto = userProfile.picture
         || document.getElementById('userPicture')?.src
         || '';
