@@ -188,6 +188,11 @@ function limparChat() {
 function adicionarMensagemChat(remetente, texto, isMe, timestamp) {
     const container = document.getElementById('chatMessages');
     if (!container) return;
+
+    // Tenta preencher a foto do oponente na primeira mensagem dele
+    if (!isMe && !opponentPicture) {
+        opponentPicture = `https://ui-avatars.com/api/?name=${encodeURIComponent(remetente)}&background=3a2210&color=c8963c&size=64`;
+    }
     
     const emptyMsg = container.querySelector('.chat-empty');
     if (emptyMsg) emptyMsg.remove();
@@ -204,6 +209,14 @@ function adicionarMensagemChat(remetente, texto, isMe, timestamp) {
     const avatarSrc = isMe
         ? (document.getElementById('userPicture')?.src || '')
         : (opponentPicture || `https://ui-avatars.com/api/?name=${encodeURIComponent(remetente)}&background=3a2210&color=c8963c&size=64`);
+    const minhaFoto = userProfile.picture
+        || document.getElementById('userPicture')?.src
+        || '';
+
+    const fotoOponente = opponentPicture
+        || `https://ui-avatars.com/api/?name=${encodeURIComponent(remetente)}&background=3a2210&color=c8963c&size=64`;
+
+    const avatarSrc = isMe ? minhaFoto : fotoOponente;
 
     // Estrutura: [avatar] [wrapper] ou [wrapper] [avatar]
     const row = document.createElement('div');
@@ -547,6 +560,7 @@ function conectarServidor() {
     partidaIdAtual    = null;
     partidaRegistrada = false;
     minhaCorAtual     = color;
+    opponentPicture   = '';
 
     limparChat();
     if (ws) ws.close();
@@ -758,6 +772,7 @@ async function processarLogin(token) {
 
         const userData = await res.json();
         userProfile.googleId = userData.google_id;
+        userProfile.picture  = userData.picture;
 
         document.getElementById('googleBtnContainer').style.display = 'none';
         const ui = document.getElementById('userInfo');
@@ -799,6 +814,7 @@ async function carregarPerfilDoServidor(googleId) {
         if (data.foto_url) {
             document.getElementById('previewFoto').src = data.foto_url;
             document.getElementById('userPicture').src = data.foto_url;
+            userProfile.picture = data.foto_url;
         }
         historicoJogos = (data.historico || []).map(h => ({
             tipo:      h.tipo,
