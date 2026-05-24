@@ -436,11 +436,20 @@ async def auth_google(request: Request, payload: AuthToken):
     picture_google = id_info.get('picture', '')
 
     try:
-        supabase.table("perfis").upsert(
-            {"google_id": google_id, "nome": nome_google,
-             "email": email_google, "foto_url": picture_google},
-            on_conflict="google_id"
-        ).execute()
+        # Verifica se o perfil ja existe para nao sobrescrever foto personalizada
+        res_existente = supabase.table("perfis").select("foto_url").eq("google_id", google_id).execute()
+        tem_foto_custom = bool(res_existente.data and res_existente.data[0].get("foto_url"))
+
+        upsert_data = {
+            "google_id": google_id,
+            "nome":      nome_google,
+            "email":     email_google,
+        }
+        # So usa a foto do Google se o usuario ainda nao enviou uma personalizada
+        if not tem_foto_custom:
+            upsert_data["foto_url"] = picture_google
+
+        supabase.table("perfis").upsert(upsert_data, on_conflict="google_id").execute()
         res = supabase.table("perfis").select("nick, saldo, foto_url").eq("google_id", google_id).execute()
         row = res.data[0] if res.data else {}
     except Exception as e:
