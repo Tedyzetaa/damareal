@@ -287,6 +287,22 @@
                 </select>
             </div>
 
+            <!-- Chat da partida -->
+            <div class="chat-panel" id="chatPanel">
+                <div class="chat-header">
+                    <span class="chat-icon">💬</span>
+                    <span class="chat-title">Chat da Partida</span>
+                    <button class="chat-toggle" onclick="toggleChat()" title="Minimizar">−</button>
+                </div>
+                <div class="chat-messages" id="chatMessages">
+                    <div class="chat-empty">Nenhuma mensagem ainda. Diga olá!</div>
+                </div>
+                <div class="chat-input-row">
+                    <input type="text" id="chatInput" class="chat-input" placeholder="Digite uma mensagem..." maxlength="200" autocomplete="off">
+                    <button class="chat-send-btn" onclick="enviarMensagemChat()">➤</button>
+                </div>
+            </div>
+
         </div>
     </div><!-- /screenGame -->
 

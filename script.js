@@ -157,6 +157,71 @@ function indexToAlgebraic(r, c) {
 }
 
 // ============================================================
+// CHAT EM TEMPO REAL
+// ============================================================
+function enviarMensagemChat() {
+    const input = document.getElementById('chatInput');
+    if (!input) return;
+    const text = input.value.trim();
+    if (!text) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        showToast("Conexão perdida. Não é possível enviar mensagem.", "error");
+        return;
+    }
+    const nick = userProfile.nick || document.getElementById('userName')?.textContent || "Jogador";
+    ws.send(JSON.stringify({
+        type: "chat",
+        nick: nick,
+        text: text
+    }));
+    input.value = "";
+    input.focus();
+}
+
+function renderMensagemChat(nick, text, timestamp) {
+    const container = document.getElementById('chatMessages');
+    if (!container) return;
+    // Remove a mensagem de "Nenhuma mensagem" se existir
+    const emptyDiv = container.querySelector('.chat-empty');
+    if (emptyDiv && emptyDiv.style.display !== 'none') {
+        emptyDiv.style.display = 'none';
+    }
+    const isOwn = (nick === (userProfile.nick || document.getElementById('userName')?.textContent));
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `chat-message ${isOwn ? 'chat-message--own' : ''}`;
+    messageDiv.innerHTML = `
+        <div class="chat-bubble">
+            ${!isOwn ? `<span class="chat-nick">${escapeHtml(nick)}</span>` : ''}
+            <span class="chat-text">${escapeHtml(text)}</span>
+            <span class="chat-time">${escapeHtml(timestamp)}</span>
+        </div>
+    `;
+    container.appendChild(messageDiv);
+    container.scrollTop = container.scrollHeight;
+}
+
+// Função auxiliar para escapar HTML (evitar XSS)
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/[&<>]/g, function(m) {
+        if (m === '&') return '&amp;';
+        if (m === '<') return '&lt;';
+        if (m === '>') return '&gt;';
+        return m;
+    });
+}
+
+function toggleChat() {
+    const panel = document.getElementById('chatPanel');
+    if (!panel) return;
+    panel.classList.toggle('chat-panel--collapsed');
+    const btn = panel.querySelector('.chat-toggle');
+    if (btn) {
+        btn.textContent = panel.classList.contains('chat-panel--collapsed') ? '+' : '−';
+    }
+}
+
+// ============================================================
 // PEÇAS CAPTURADAS
 // ============================================================
 function contarPecas(board) {
@@ -241,6 +306,8 @@ function onMensagemServidor(data, minhaCor) {
         selectedSquare = null;
         renderBoard();
     } else if (data.type === 'game_over') {
+    } else if (data.type === 'chat') {
+        renderMensagemChat(data.nick, data.text, data.timestamp);
         partidaIdAtual    = data.partida_id || null;
         partidaRegistrada = false;
         if (data.board) {
@@ -382,6 +449,13 @@ function conectarPartidaOnline(gameId, minhaCor) {
             btnAbandono.textContent = '🏳 Abandonar';
             btnAbandono.onclick = confirmarAbandono;
         }
+
+        const chatInput = document.getElementById('chatInput');
+        if (chatInput) {
+            chatInput.removeEventListener('keydown', handleChatEnter);
+            chatInput.addEventListener('keydown', handleChatEnter);
+        }
+
         showToast("Conectado! Boa sorte.", "success");
     };
     ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), minhaCor);
@@ -433,6 +507,13 @@ function conectarServidor() {
             btnAbandono.textContent = '🏳 Abandonar';
             btnAbandono.onclick = confirmarAbandono;
         }
+
+        const chatInput = document.getElementById('chatInput');
+        if (chatInput) {
+            chatInput.removeEventListener('keydown', handleChatEnter);
+            chatInput.addEventListener('keydown', handleChatEnter);
+        }
+
         ws.send(JSON.stringify({ type: 'config_rules', regras: rules }));
         showToast('Conectado!', 'success');
     };
@@ -444,6 +525,13 @@ function conectarServidor() {
         }
     };
     ws.onerror = () => showToast('Falha ao conectar com o servidor.', 'error');
+}
+
+function handleChatEnter(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        enviarMensagemChat();
+    }
 }
 
 function mudarRegras(novaRegra) {
