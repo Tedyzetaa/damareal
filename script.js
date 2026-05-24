@@ -184,28 +184,45 @@ function limparChat() {
     }
 }
 
-function renderMensagemChat(nick, text, timestamp, senderId) {
+function adicionarMensagemChat(remetente, texto, isMe) {
     const container = document.getElementById('chatMessages');
     if (!container) return;
+    
+    // Remove o aviso de "Nenhuma mensagem" se ele existir
+    const emptyMsg = container.querySelector('.chat-empty');
+    if (emptyMsg) emptyMsg.remove();
 
-    // Remove a mensagem de "Nenhuma mensagem" se existir
-    const emptyDiv = container.querySelector('.chat-empty');
-    if (emptyDiv) emptyDiv.style.display = 'none';
+    // Pega a hora atual do sistema (ex: 14:35)
+    const agora = new Date();
+    const horaFormatada = agora.getHours().toString().padStart(2, '0') + ':' + 
+                          agora.getMinutes().toString().padStart(2, '0');
 
-    const isOwn = senderId && userProfile.googleId
-        ? (senderId === userProfile.googleId)
-        : (nick === (userProfile.nick || document.getElementById('userName')?.textContent || ""));
+    // 1. Cria o Wrapper
+    const wrapper = document.createElement('div');
+    wrapper.className = `chat-wrapper ${isMe ? 'me' : 'opponent'}`;
 
-    const messageDiv = document.createElement('div');
-    messageDiv.className = `chat-message${isOwn ? ' chat-message--own' : ''}`;
-    messageDiv.innerHTML = `
-        <div class="chat-bubble">
-            ${!isOwn ? `<span class="chat-nick">${escapeHtml(nick)}</span>` : ''}
-            <span class="chat-text">${escapeHtml(text)}</span>
-            <span class="chat-time">${escapeHtml(timestamp)}</span>
-        </div>
-    `;
-    container.appendChild(messageDiv);
+    // 2. Cria o Nick
+    const nickEl = document.createElement('div');
+    nickEl.className = 'chat-nick';
+    nickEl.textContent = isMe ? "Eu" : remetente; // Usar textContent evita ataques XSS
+
+    // 3. Cria a Bolha
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble';
+    bubble.textContent = texto; 
+
+    // 4. Cria o Tempo
+    const time = document.createElement('span');
+    time.className = 'chat-time';
+    time.textContent = horaFormatada;
+
+    // 5. Monta o quebra-cabeça
+    bubble.appendChild(time);
+    wrapper.appendChild(nickEl);
+    wrapper.appendChild(bubble);
+    container.appendChild(wrapper);
+
+    // 6. Faz o scroll automático para a última mensagem
     container.scrollTop = container.scrollHeight;
 }
 
