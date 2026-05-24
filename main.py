@@ -464,16 +464,19 @@ async def update_profile(
     dados:    str = Form(...),
     googleId: str = Form(...)
 ):
-    # Verificação básica de autenticação (Bug 8)
+    # Autenticação obrigatória
     auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.split(" ")[1]
-        try:
-            id_info = id_token.verify_oauth2_token(token, google_requests.Request(), GOOGLE_CLIENT_ID)
-            if id_info['sub'] != googleId:
-                raise HTTPException(status_code=403, detail="Não autorizado a alterar este perfil.")
-        except Exception:
-             raise HTTPException(status_code=401, detail="Token inválido.")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token de autenticação ausente.")
+    token = auth_header.split(" ")[1]
+    try:
+        id_info = id_token.verify_oauth2_token(token, google_requests.Request(), GOOGLE_CLIENT_ID)
+        if id_info['sub'] != googleId:
+            raise HTTPException(status_code=403, detail="Não autorizado a alterar este perfil.")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Token inválido ou expirado.")
 
     perfil_json = json.loads(dados)
 
@@ -499,13 +502,30 @@ async def update_profile(
         ext = os.path.splitext(foto.filename)[1].lower()
         if ext not in EXTENSOES_PERMITIDAS:
             raise HTTPException(status_code=400, detail="Formato de imagem não permitido.")
+
+        foto_bytes = await foto.read()
+        if len(foto_bytes) > 5 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="A foto deve ter no máximo 5 MB.")
+
         ext_final   = content_type_map.get(foto.content_type, ext)
-        bucket_path = f"avatars/{googleId}{ext_final}"
-        foto_bytes  = await foto.read()
-        supabase.storage.from_("avatars").upload(
-            bucket_path, foto_bytes,
-            file_options={"content-type": foto.content_type, "upsert": True}
-        )
+        # Usa apenas o googleId como nome do arquivo (sem subpasta redundante)
+        bucket_path = f"{googleId}{ext_final}"
+        try:
+            supabase.storage.from_("avatars").upload(
+                bucket_path, foto_bytes,
+                file_options={"content-type": foto.content_type, "upsert": "true"}
+            )
+        except Exception as upload_err:
+            err_msg = str(upload_err)
+            # Supabase retorna erro se o arquivo já existe e upsert não funciona;
+            # tenta update como fallback
+            try:
+                supabase.storage.from_("avatars").update(
+                    bucket_path, foto_bytes,
+                    file_options={"content-type": foto.content_type, "upsert": "true"}
+                )
+            except Exception as update_err:
+                raise HTTPException(status_code=500, detail=f"Erro ao salvar foto: {err_msg}")
         foto_url_atual = supabase.storage.from_("avatars").get_public_url(bucket_path)
 
     update_data = {
@@ -518,7 +538,10 @@ async def update_profile(
     if foto_url_atual:
         update_data["foto_url"] = foto_url_atual
 
-    supabase.table("perfis").update(update_data).eq("google_id", googleId).execute()
+    try:
+        supabase.table("perfis").update(update_data).eq("google_id", googleId).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar perfil: {str(e)}")
     return {"status": "Perfil salvo com sucesso!", "foto_url": foto_url_atual}
 
 @app.get("/get-profile/{google_id}")

@@ -53,7 +53,8 @@ async function healthCheck() {
     try {
         const controller = new AbortController();
         const timeoutId  = setTimeout(() => controller.abort(), 60000);
-        const res        = await fetch(`${API}/
+        const res        = await fetch(`${API}/ping`, { signal: controller.signal });
+        clearTimeout(timeoutId);
         if (res.ok) {
             showToast('Servidor pronto!', 'success', 2000);
         } else {
@@ -67,7 +68,8 @@ async function healthCheck() {
 function iniciarKeepalive() {
     setInterval(async () => {
         try {
-           
+            await fetch(`${API}/ping`);
+        } catch (_) { /* silencioso */ }
     }, 10 * 60 * 1000); // a cada 10 minutos
 }
 
@@ -376,6 +378,9 @@ function onMensagemServidor(data, minhaCor) {
             renderBoard();
         }
         abrirModalFimJogo(data.winner, minhaCor);
+    } else if (data.type === 'opponent_left') {
+        showToast(data.message || 'O adversário se desconectou.', 'error', 5000);
+        meuTurno = false;
     } else if (data.type === 'chat') {
         const isMe = data.sender_id && userProfile.googleId
             ? data.sender_id === userProfile.googleId
@@ -417,6 +422,11 @@ function jogarContraIA() {
         if (btnAbandono) {
             btnAbandono.textContent = '🏳 Abandonar';
             btnAbandono.onclick = confirmarAbandono;
+        }
+        const chatInput = document.getElementById('chatInput');
+        if (chatInput) {
+            chatInput.removeEventListener('keydown', handleChatEnter);
+            chatInput.addEventListener('keydown', handleChatEnter);
         }
         showToast(`Você joga de ${corNome}. Boa sorte!`, 'success');
     };
@@ -933,12 +943,22 @@ async function salvarPerfil(event) {
 
     const formData  = new FormData();
     const fileInput = document.getElementById('inputFoto');
-    if (fileInput.files.length > 0) formData.append('foto', fileInput.files[0]);
+    if (fileInput.files.length > 0) {
+        const file = fileInput.files[0];
+        if (file.size > 5 * 1024 * 1024) {
+            showToast('A foto deve ter no máximo 5 MB.', 'error');
+            if (btn) { btn.disabled = false; btn.textContent = 'Salvar Perfil'; }
+            return;
+        }
+        formData.append('foto', file);
+    }
     formData.append('googleId', userProfile.googleId);
     formData.append('dados', JSON.stringify(userProfile));
 
     try {
-        const res = await fetch(`${API}/update-profile`, { method: 'POST', body: formData });
+        const credential = localStorage.getItem('dr_credential');
+        const headers    = credential ? { 'Authorization': `Bearer ${credential}` } : {};
+        const res = await fetch(`${API}/update-profile`, { method: 'POST', headers, body: formData });
         if (res.ok) {
             const data = await res.json();
             showToast('Perfil atualizado com sucesso!', 'success');
