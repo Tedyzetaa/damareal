@@ -26,9 +26,7 @@ let userProfile = {
 let historicoJogos = [];
 
 // API dinâmica conforme ambiente
-const API = window.location.hostname === 'localhost'
-    ? 'http://localhost:6500'
-    : 'https://damareal1-2ml7.onrender.com';
+const API = CONFIG.API_URL;
 
 // ============================================================
 // TOAST
@@ -178,6 +176,13 @@ function enviarMensagemChat() {
     input.focus();
 }
 
+function limparChat() {
+    const container = document.getElementById('chatMessages');
+    if (container) {
+        container.innerHTML = '<div class="chat-empty">Nenhuma mensagem ainda. Diga olá!</div>';
+    }
+}
+
 function renderMensagemChat(nick, text, timestamp) {
     const container = document.getElementById('chatMessages');
     if (!container) return;
@@ -203,12 +208,12 @@ function renderMensagemChat(nick, text, timestamp) {
 // Função auxiliar para escapar HTML (evitar XSS)
 function escapeHtml(str) {
     if (!str) return '';
-    return str.replace(/[&<>]/g, function(m) {
-        if (m === '&') return '&amp;';
-        if (m === '<') return '&lt;';
-        if (m === '>') return '&gt;';
-        return m;
-    });
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 function toggleChat() {
@@ -306,8 +311,6 @@ function onMensagemServidor(data, minhaCor) {
         selectedSquare = null;
         renderBoard();
     } else if (data.type === 'game_over') {
-    } else if (data.type === 'chat') {
-        renderMensagemChat(data.nick, data.text, data.timestamp);
         partidaIdAtual    = data.partida_id || null;
         partidaRegistrada = false;
         if (data.board) {
@@ -315,6 +318,8 @@ function onMensagemServidor(data, minhaCor) {
             renderBoard();
         }
         abrirModalFimJogo(data.winner, minhaCor);
+    } else if (data.type === 'chat') {
+        renderMensagemChat(data.nick, data.text, data.timestamp);
     }
 }
 
@@ -334,6 +339,7 @@ function jogarContraIA() {
     partidaRegistrada = false;
     minhaCorAtual   = corAleatoria;
 
+    limparChat();
     if (ws) ws.close();
 
     const gameId      = 'ia_' + Math.floor(Math.random() * 99999);
@@ -376,6 +382,7 @@ function iniciarMatchmaking() {
 
     mudarTela('screenGame');
     currentBoard = [];
+    limparChat();
     document.getElementById('status').textContent   = 'Procurando oponente...';
     document.getElementById('turnIndicator').className = 'turn-indicator thinking';
 
@@ -435,6 +442,7 @@ function conectarPartidaOnline(gameId, minhaCor) {
     partidaRegistrada = false;
     minhaCorAtual     = minhaCor;
     modoAtual         = 'online';
+    limparChat();
 
     if (ws) ws.close();
 
@@ -494,6 +502,7 @@ function conectarServidor() {
     partidaRegistrada = false;
     minhaCorAtual     = color;
 
+    limparChat();
     if (ws) ws.close();
     const wsProtocol = API.startsWith('https') ? 'wss' : 'ws';
     ws = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/partida/${gameId}/${color}`);

@@ -392,7 +392,7 @@ class GerenciadorSalas:
                 pass
 
     async def broadcast(self, game_id, msg):
-        for ws in self.conexoes.get(game_id, []):
+        for ws in list(self.conexoes.get(game_id, [])):
             try:
                 await ws.send_text(json.dumps(msg))
             except Exception:
@@ -446,10 +446,22 @@ async def auth_google(request: Request, payload: AuthToken):
 
 @app.post("/update-profile")
 async def update_profile(
+    request: Request,
     foto:     UploadFile = File(None),
     dados:    str = Form(...),
     googleId: str = Form(...)
 ):
+    # Verificação básica de autenticação (Bug 8)
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        try:
+            id_info = id_token.verify_oauth2_token(token, google_requests.Request(), GOOGLE_CLIENT_ID)
+            if id_info['sub'] != googleId:
+                raise HTTPException(status_code=403, detail="Não autorizado a alterar este perfil.")
+        except Exception:
+             raise HTTPException(status_code=401, detail="Token inválido.")
+
     perfil_json = json.loads(dados)
 
     data_nasc = perfil_json.get("dataNascimento")
@@ -624,7 +636,7 @@ async def websocket_lobby_endpoint(websocket: WebSocket, google_id: str = None):
                 partida_id = consulta.data[0]["partida_id"]
                 # Busca a cor que foi atribuída (armazenada no match_info pelo outro jogador)
                 info = match_info.pop(google_id, None)
-                cor = info["color"] if info else random.choice(['w', 'b'])
+                cor = info["color"] if (info and "color" in info) else 'b' # Se o outro é 'w', eu sou 'b'
                 # Busca o nick do oponente (opcional)
                 resp_op = supabase.table("fila_espera") \
                     .select("jogador_id") \
@@ -786,6 +798,17 @@ async def websocket_partida_endpoint(websocket: WebSocket, game_id: str, player_
                             })
                 else:
                     await websocket.send_text(json.dumps({"type": "invalid_move", "message": motivo}))
+            elif msg.get("type") == "chat":
+                nick = str(msg.get("nick", "Jogador"))[:30]
+                text = str(msg.get("text", ""))[:200].strip()
+                if text:
+                    await salas.broadcast(game_id, {
+                        "type": "chat",
+                        "nick": nick,
+                        "text": text,
+                        "timestamp": datetime.now().strftime("%H:%M"),
+                        "game_id": game_id
+                    })
             elif msg.get("type") == "config_rules":
                 partida["regras"] = msg.get("regras", "brasileira")
                 await salas.broadcast(game_id, {
@@ -793,6 +816,10 @@ async def websocket_partida_endpoint(websocket: WebSocket, game_id: str, player_
                     "turn": partida["turn"], "regras": partida["regras"]
                 })
     except WebSocketDisconnect:
+        await salas.broadcast(game_id, {
+            "type": "opponent_left",
+            "message": "O adversário se desconectou."
+        })
         salas.desconectar(game_id, websocket)
 
 # ================================================================
