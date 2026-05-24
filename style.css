@@ -1027,20 +1027,20 @@ body::before {
 }
 
 /* ============================================================
-   PAINEL DE CHAT
+   PAINEL DE CHAT — ESTILO WHATSAPP
 ============================================================ */
 .chat-panel {
     width: 100%;
     max-width: 480px;
     margin-top: 20px;
-    background: rgba(20, 24, 32, 0.85);
-    backdrop-filter: blur(8px);
+    background: rgba(13, 16, 23, 0.92);
+    backdrop-filter: blur(10px);
     border: 1px solid var(--gold-dim);
     border-radius: var(--radius-lg);
     overflow: hidden;
-    transition: all 0.2s ease;
     display: flex;
     flex-direction: column;
+    transition: all 0.2s ease;
 }
 
 .chat-header {
@@ -1052,12 +1052,7 @@ body::before {
     border-bottom: 1px solid var(--gold-dim);
 }
 
-.chat-icon {
-    font-size: 16px;
-    margin-right: 6px;
-    color: var(--gold-mid);
-}
-
+.chat-icon  { font-size: 16px; margin-right: 6px; }
 .chat-title {
     font-family: 'Cinzel', serif;
     font-size: 13px;
@@ -1074,81 +1069,95 @@ body::before {
     font-size: 18px;
     font-weight: bold;
     cursor: pointer;
-    width: 24px;
-    height: 24px;
+    width: 24px; height: 24px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     border-radius: 4px;
     transition: all 0.2s;
 }
+.chat-toggle:hover { background: rgba(200,150,60,0.2); color: var(--gold-bright); }
 
-.chat-toggle:hover {
-    background: rgba(200,150,60,0.2);
-    color: var(--gold-bright);
-}
-
+/* Área de mensagens */
 .chat-messages {
     flex: 1;
-    padding: 12px;
+    padding: 12px 10px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    min-height: 180px;
+    gap: 10px;
+    min-height: 200px;
+    max-height: 260px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--gold-dim) transparent;
+}
+.chat-messages::-webkit-scrollbar { width: 4px; }
+.chat-messages::-webkit-scrollbar-thumb { background: var(--gold-dim); border-radius: 4px; }
+
+/* Linha de mensagem: avatar + wrapper, estilo WhatsApp */
+.chat-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+}
+.chat-row--me       { flex-direction: row-reverse; }   /* próprias → direita */
+.chat-row--opponent { flex-direction: row; }            /* adversário → esquerda */
+
+/* Avatar circular */
+.chat-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 1px solid var(--gold-dim);
+    flex-shrink: 0;
+    align-self: flex-end;
+    margin-bottom: 2px;
 }
 
-/* Wrapper que segura o nick e a bolha */
+/* Wrapper da bolha */
 .chat-wrapper {
     display: flex;
     flex-direction: column;
-    max-width: 85%;
+    max-width: 75%;
 }
+.chat-wrapper.me       { align-items: flex-end; }
+.chat-wrapper.opponent { align-items: flex-start; }
 
-/* Alinha minhas mensagens à direita */
-.chat-wrapper.me {
-    align-self: flex-end;
-    align-items: flex-end;
-}
-
-/* Alinha as mensagens do oponente à esquerda */
-.chat-wrapper.opponent {
-    align-self: flex-start;
-    align-items: flex-start;
-}
-
-/* Estilo do Nick (fica em cima da bolha) */
+/* Nick do oponente (acima da bolha, só no lado esquerdo) */
 .chat-nick {
-    font-size: 11px;
-    color: var(--text-secondary);
-    margin-bottom: 4px;
     font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
     font-weight: 600;
+    color: var(--gold-mid);
+    margin-bottom: 3px;
+    padding-left: 2px;
 }
 
-/* Bolha da mensagem */
+/* Bolha */
 .chat-bubble {
-    padding: 8px 12px;
+    padding: 8px 10px 4px 10px;
     border-radius: 12px;
     color: var(--text-primary);
     word-break: break-word;
-    line-height: 1.4;
+    line-height: 1.45;
+    font-family: 'Crimson Text', serif;
+    font-size: 14px;
     position: relative;
-    font-size: 13px;
 }
 
-/* Bolha: Minha Mensagem (com destaque dourado) */
+/* Própria mensagem — dourado suave */
 .chat-wrapper.me .chat-bubble {
-    background: var(--bg-raised);
-    border: 1px solid var(--gold-mid);
-    border-bottom-right-radius: 2px; /* Biquinho da bolha */
+    background: #1e2d14;
+    border: 1px solid rgba(200,150,60,0.45);
+    border-bottom-right-radius: 3px;
 }
 
-/* Bolha: Mensagem do Oponente */
+/* Mensagem do adversário — fundo escuro */
 .chat-wrapper.opponent .chat-bubble {
     background: var(--bg-card);
-    border: 1px solid var(--board-border);
-    border-bottom-left-radius: 2px; /* Biquinho da bolha */
+    border: 1px solid rgba(255,255,255,0.08);
+    border-bottom-left-radius: 3px;
 }
 
 /* Hora da mensagem */
@@ -1158,73 +1167,62 @@ body::before {
     font-size: 9px;
     color: var(--text-muted);
     text-align: right;
-    margin-top: 6px;
+    margin-top: 4px;
 }
 
-/* Esconde a mensagem de "Nenhuma mensagem" quando o chat encher */
+/* Mensagem vazia */
 .chat-empty {
     text-align: center;
     color: var(--text-muted);
     font-size: 12px;
-    margin-top: auto;
-    margin-bottom: auto;
+    font-style: italic;
+    margin: auto;
 }
 
+/* Linha de input */
 .chat-input-row {
     display: flex;
     gap: 8px;
-    padding: 10px 14px;
+    padding: 10px 12px;
     border-top: 1px solid var(--gold-dim);
-    background: rgba(0,0,0,0.2);
+    background: rgba(0,0,0,0.25);
+    align-items: center;
 }
 
 .chat-input {
     flex: 1;
     background: transparent;
     border: 1px solid var(--gold-dim);
-    border-radius: var(--radius-sm);
-    padding: 8px 12px;
+    border-radius: 20px;
+    padding: 8px 14px;
     color: var(--text-primary);
     font-family: 'Crimson Text', serif;
     font-size: 14px;
     outline: none;
     transition: all 0.2s;
 }
-
 .chat-input:focus {
     border-color: var(--gold-mid);
     box-shadow: 0 0 0 2px rgba(200,150,60,0.15);
 }
-
-.chat-input::placeholder {
-    color: var(--text-secondary);
-    font-style: italic;
-}
+.chat-input::placeholder { color: var(--text-secondary); font-style: italic; }
 
 .chat-send-btn {
     background: var(--gold-mid);
     border: none;
-    border-radius: var(--radius-sm);
-    padding: 0 14px;
+    border-radius: 50%;
+    width: 36px; height: 36px;
     cursor: pointer;
-    font-size: 16px;
+    font-size: 15px;
     color: #1a0f00;
-    transition: all 0.15s ease;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.15s ease;
 }
-
-.chat-send-btn:hover {
-    background: var(--gold-bright);
-    transform: scale(1.05);
-}
+.chat-send-btn:hover { background: var(--gold-bright); transform: scale(1.08); }
 
 .chat-panel--collapsed .chat-messages,
-.chat-panel--collapsed .chat-input-row {
-    display: none;
-}
-
-.chat-panel--collapsed .chat-header {
-    border-bottom: none;
-}
+.chat-panel--collapsed .chat-input-row { display: none; }
+.chat-panel--collapsed .chat-header { border-bottom: none; }

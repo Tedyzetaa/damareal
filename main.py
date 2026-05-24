@@ -582,14 +582,18 @@ async def buscar_oponente(jogador_id: str) -> Optional[dict]:
         .execute()
     return resp.data[0] if resp.data else None
 
-async def obter_nick(jogador_id: str) -> str:
+async def obter_perfil_basico(jogador_id: str) -> dict:
     resp = supabase.table("perfis") \
-        .select("nick, nome") \
+        .select("nick, nome, foto_url") \
         .eq("google_id", jogador_id) \
         .execute()
     if resp.data:
-        return resp.data[0].get("nick") or resp.data[0].get("nome") or "Jogador"
-    return "Desconhecido"
+        row = resp.data[0]
+        return {
+            "nick":    row.get("nick") or row.get("nome") or "Jogador",
+            "picture": row.get("foto_url") or ""
+        }
+    return {"nick": "Desconhecido", "picture": ""}
 
 # ================================================================
 # WEBSOCKET — LOBBY (MATCHMAKING)
@@ -644,12 +648,13 @@ async def websocket_lobby_endpoint(websocket: WebSocket, google_id: str = None):
                     .neq("jogador_id", google_id) \
                     .execute()
                 opp_id = resp_op.data[0]["jogador_id"] if resp_op.data else None
-                opp_nick = await obter_nick(opp_id) if opp_id else "Adversário"
+                opp_perfil = await obter_perfil_basico(opp_id) if opp_id else {"nick": "Adversário", "picture": ""}
                 await websocket.send_text(json.dumps({
                     "type": "matched",
                     "game_id": partida_id,
                     "color": cor,
-                    "opponent_nick": opp_nick
+                    "opponent_nick":    opp_perfil["nick"],
+                    "opponent_picture": opp_perfil["picture"]
                 }))
                 async with lobby_lock:
                     await remover_da_fila(google_id)
@@ -697,20 +702,22 @@ async def websocket_lobby_endpoint(websocket: WebSocket, google_id: str = None):
                     .eq("jogador_id", oponente["jogador_id"]) \
                     .execute()
 
-                nick_op = await obter_nick(oponente["jogador_id"])
-                nick_self = await obter_nick(google_id)
+                perfil_op   = await obter_perfil_basico(oponente["jogador_id"])
+                perfil_self = await obter_perfil_basico(google_id)
 
                 msg_self = {
                     "type": "matched",
                     "game_id": game_id,
                     "color": cor_atual,
-                    "opponent_nick": nick_op
+                    "opponent_nick":    perfil_op["nick"],
+                    "opponent_picture": perfil_op["picture"]
                 }
                 msg_opp = {
                     "type": "matched",
                     "game_id": game_id,
                     "color": cor_op,
-                    "opponent_nick": nick_self
+                    "opponent_nick":    perfil_self["nick"],
+                    "opponent_picture": perfil_self["picture"]
                 }
 
                 # Notifica oponente se estiver conectado, senão guarda no match_info

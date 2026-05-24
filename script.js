@@ -12,6 +12,7 @@ let capturedByBlack = 0;
 let partidaIdAtual    = null;
 let partidaRegistrada = false;
 let minhaCorAtual   = 'w';
+let opponentPicture = ""; // foto do adversário atual
 
 let userProfile = {
     googleId:      null,
@@ -184,45 +185,65 @@ function limparChat() {
     }
 }
 
-function adicionarMensagemChat(remetente, texto, isMe) {
+function adicionarMensagemChat(remetente, texto, isMe, timestamp) {
     const container = document.getElementById('chatMessages');
     if (!container) return;
     
-    // Remove o aviso de "Nenhuma mensagem" se ele existir
     const emptyMsg = container.querySelector('.chat-empty');
     if (emptyMsg) emptyMsg.remove();
 
-    // Pega a hora atual do sistema (ex: 14:35)
-    const agora = new Date();
-    const horaFormatada = agora.getHours().toString().padStart(2, '0') + ':' + 
-                          agora.getMinutes().toString().padStart(2, '0');
+    // Hora: prefere timestamp do servidor, fallback para relógio local
+    let hora = timestamp || '';
+    if (!hora) {
+        const agora = new Date();
+        hora = agora.getHours().toString().padStart(2, '0') + ':' +
+               agora.getMinutes().toString().padStart(2, '0');
+    }
 
-    // 1. Cria o Wrapper
+    // Avatar
+    const avatarSrc = isMe
+        ? (document.getElementById('userPicture')?.src || '')
+        : (opponentPicture || `https://ui-avatars.com/api/?name=${encodeURIComponent(remetente)}&background=3a2210&color=c8963c&size=64`);
+
+    // Estrutura: [avatar] [wrapper] ou [wrapper] [avatar]
+    const row = document.createElement('div');
+    row.className = `chat-row ${isMe ? 'chat-row--me' : 'chat-row--opponent'}`;
+
+    const avatar = document.createElement('img');
+    avatar.className = 'chat-avatar';
+    avatar.src = avatarSrc;
+    avatar.alt = isMe ? 'Eu' : remetente;
+
     const wrapper = document.createElement('div');
     wrapper.className = `chat-wrapper ${isMe ? 'me' : 'opponent'}`;
 
-    // 2. Cria o Nick
-    const nickEl = document.createElement('div');
-    nickEl.className = 'chat-nick';
-    nickEl.textContent = isMe ? "Eu" : remetente; // Usar textContent evita ataques XSS
+    if (!isMe) {
+        const nickEl = document.createElement('div');
+        nickEl.className = 'chat-nick';
+        nickEl.textContent = remetente;
+        wrapper.appendChild(nickEl);
+    }
 
-    // 3. Cria a Bolha
     const bubble = document.createElement('div');
     bubble.className = 'chat-bubble';
     bubble.textContent = texto; 
 
-    // 4. Cria o Tempo
     const time = document.createElement('span');
     time.className = 'chat-time';
-    time.textContent = horaFormatada;
+    time.textContent = hora;
 
-    // 5. Monta o quebra-cabeça
     bubble.appendChild(time);
-    wrapper.appendChild(nickEl);
     wrapper.appendChild(bubble);
-    container.appendChild(wrapper);
 
-    // 6. Faz o scroll automático para a última mensagem
+    if (isMe) {
+        row.appendChild(wrapper);
+        row.appendChild(avatar);
+    } else {
+        row.appendChild(avatar);
+        row.appendChild(wrapper);
+    }
+
+    container.appendChild(row);
     container.scrollTop = container.scrollHeight;
 }
 
@@ -340,7 +361,10 @@ function onMensagemServidor(data, minhaCor) {
         }
         abrirModalFimJogo(data.winner, minhaCor);
     } else if (data.type === 'chat') {
-        renderMensagemChat(data.nick, data.text, data.timestamp);
+        const isMe = data.sender_id && userProfile.googleId
+            ? data.sender_id === userProfile.googleId
+            : data.nick === (userProfile.nick || document.getElementById('userName')?.textContent || '');
+        adicionarMensagemChat(data.nick, data.text, isMe, data.timestamp);
     }
 }
 
@@ -423,6 +447,7 @@ function iniciarMatchmaking() {
     lobbyWs.onmessage = (event) => {
         const data = JSON.parse(event.data);
         if (data.type === "matched") {
+            opponentPicture = data.opponent_picture || "";
             const corNome = data.color === 'w' ? 'Brancas' : 'Pretas';
             showToast(`Oponente encontrado: ${data.opponent_nick || 'Jogador'}! Você joga de ${corNome}.`, "success", 4000);
             window.lobbySocket = null;
