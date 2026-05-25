@@ -392,6 +392,19 @@ function onMensagemServidor(data, minhaCor) {
     } else if (data.type === 'opponent_left') {
         showToast(data.message || 'O adversário se desconectou.', 'error', 5000);
         meuTurno = false;
+    } else if (data.type === 'rematch_offer') {
+        if (data.offered_by !== minhaCorAtual) {
+            showToast("O oponente ofereceu uma revanche!", "success");
+            const btnRepeat = document.getElementById('btnJogarNovamente');
+            if (btnRepeat && modoAtual === 'aposta') {
+                btnRepeat.textContent = 'Aceitar Revanche';
+                btnRepeat.onclick = () => aceitarRevancheAposta();
+            }
+        }
+    } else if (data.type === 'rematch_started') {
+        fecharModal();
+        const novaCor = data.jogador1_id === userProfile.googleId ? data.cor_jogador1 : data.cor_jogador2;
+        conectarPartidaAposta(data.game_id, data.sala_id, data.valor, data.premio, novaCor);
     } else if (data.type === 'chat') {
         const isMe = data.sender_id && userProfile.googleId
             ? data.sender_id === userProfile.googleId
@@ -641,7 +654,10 @@ function confirmarAbandono() {
         return;
     }
     const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay open';
+    overlay.className = 'modal-overlay open'; // type: ignore
+    // Bug 3: Adicionar aviso financeiro no modal de abandono para apostas
+    const msgFinanceira = modoAtual === 'aposta' && window.apostaInfo
+        ? `\n\n⚠️ Você perderá R$ ${window.apostaInfo.valor.toFixed(2)} da aposta!` : '';
     overlay.innerHTML = `
         <div class="modal-box">
             <div class="modal-trophy" style="font-size:40px;">🏳</div>
@@ -649,7 +665,7 @@ function confirmarAbandono() {
             <div class="modal-subtitle">Você perderá a partida atual.</div>
             <div class="modal-actions">
                 <button class="btn-modal-secondary" onclick="this.closest('.modal-overlay').remove()">Continuar</button>
-                <button class="btn-modal-primary"   onclick="abandonarPartida()">Abandonar</button>
+                <button class="btn-modal-primary"   onclick="abandonarPartida()">${msgFinanceira ? 'Perder Aposta' : 'Abandonar'}</button>
             </div>
         </div>`;
     document.body.appendChild(overlay);
@@ -675,6 +691,7 @@ function abrirModalFimJogo(winner, minhaCor) {
     if (modoAtual === 'aposta' && window.apostaInfo) {
         const { valor, premio } = window.apostaInfo;
         if (winner === minhaCor) {
+            // Bug 7: Corrigido para 10% de taxa (1.8x prêmio)
             resultadoFinanceiro = `<br>💰 +R$ ${premio.toFixed(2)} creditado no seu saldo`;
         } else if (winner === 'empate') {
             resultadoFinanceiro = `<br>🔄 Aposta devolvida — R$ ${valor.toFixed(2)}`;
@@ -707,6 +724,9 @@ function abrirModalFimJogo(winner, minhaCor) {
         } else if (modoAtual === 'ia') {
             btnRepeat.onclick = () => { fecharModal(); jogarContraIA(); };
             btnRepeat.textContent = 'Jogar Novamente';
+        } else if (modoAtual === 'aposta') {
+            btnRepeat.onclick = () => oferecerRevancheAposta();
+            btnRepeat.textContent = 'Pedir Revanche';
         } else {
             btnRepeat.onclick = () => { fecharModal(); mudarTela('screenMenu'); };
             btnRepeat.textContent = 'Menu';
@@ -714,7 +734,14 @@ function abrirModalFimJogo(winner, minhaCor) {
     }
 
     document.getElementById('modalFimJogo').classList.add('open');
-    registrarJogoNoServidor(resultado);
+    // Bug 8: Registrar jogo com valor correto para apostas
+    if (modoAtual === 'aposta' && window.apostaInfo) {
+        registrarJogoNoServidor(resultado, window.apostaInfo.valor);
+        // Melhoria 1: Atualizar saldo imediatamente após partida apostada
+        setTimeout(() => buscarSaldoAtualizado(), 1500);
+    } else {
+        registrarJogoNoServidor(resultado, 0);
+    }
 }
 
 function fecharModal() {
@@ -1207,8 +1234,18 @@ async function entrarFilaAposta(valor) {
 
 function iniciarPollingAposta(salaId, valor) {
     if (apostaPollingInterval) clearInterval(apostaPollingInterval);
+    // Bug 10: Adicionar timeout máximo e tratamento de sala cancelada
+    const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos
+    const inicioPolling = Date.now();
+
     apostaPollingInterval = setInterval(async () => {
         try {
+            if (Date.now() - inicioPolling > TIMEOUT_MS) {
+                clearInterval(apostaPollingInterval);
+                showToast("Tempo esgotado. Nenhum adversário encontrado.", "error");
+                cancelarBuscaAposta(); // Chama a função para cancelar no backend e fechar modal
+                return;
+            }
             const res = await fetch(`${API}/api/aposta/status/${salaId}`);
             const data = await res.json();
             if (data.status === 'em_jogo') {
@@ -1217,7 +1254,7 @@ function iniciarPollingAposta(salaId, valor) {
                     ? data.cor_jogador1
                     : data.cor_jogador2;
                 document.getElementById('modalAguardandoOponente').style.display = 'none';
-                conectarPartidaAposta(data.game_id, salaId, valor, data.premio, minhaCor);
+                conectarPartidaAposta(data.game_id, salaId, valor, data.premio, minhaCor); // type: ignore
             } else if (data.status === 'cancelada') {
                 clearInterval(apostaPollingInterval);
                 document.getElementById('modalAguardandoOponente').style.display = 'none';
@@ -1276,11 +1313,28 @@ function conectarPartidaAposta(gameId, salaId, valorEntrada, premio, minhaCor) {
         banner.innerHTML = `💰 APOSTA: R$ ${valorEntrada}  →  Prêmio: R$ ${premio}`;
         banner.style.display = 'block';
     };
-    ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), minhaCorAtual);
+    ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), minhaCorAtual); // type: ignore
     ws.onclose = () => {
         if (modoAtual === 'aposta') {
-            showToast("Partida encerrada.", "info");
-            mudarTela('screenMenu');
+            // Bug 9: Verificar se o modal de fim de jogo está aberto antes de redirecionar
+            const modalAberto = document.getElementById('modalFimJogo')?.classList.contains('open');
+            if (!modalAberto) {
+                showToast("Partida encerrada.", "info");
+                mudarTela('screenMenu');
+            }
         }
     };
+}
+
+function oferecerRevancheAposta() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'rematch_offer' }));
+        showToast("Proposta de revanche enviada.", "info");
+    }
+}
+
+function aceitarRevancheAposta() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'rematch_accept' }));
+    }
 }
