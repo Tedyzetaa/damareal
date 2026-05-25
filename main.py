@@ -761,20 +761,28 @@ async def entrar_fila_aposta(request: Request, payload: EntrarFilaApostaPayload)
     if resp_existente.data:
         raise HTTPException(status_code=409, detail="Você já está em uma sala ativa")
     
-    # 2. Tentar reservar uma sala existente atomicamente
-    # Isso evita race condition onde dois jogadores tentam entrar na mesma sala
-    reserva_sala = supabase.table("salas_aposta") \
-        .update({"status": "reservando", "jogador2_id": google_id}) \
+    # 2. Tentar encontrar uma sala existente (a mais antiga) para seguir o princípio FIFO
+    resp_sala = supabase.table("salas_aposta") \
+        .select("*") \
         .eq("status", "aguardando") \
         .eq("valor_entrada", valor) \
         .is_("jogador2_id", "null") \
         .neq("jogador1_id", google_id) \
+        .order("created_at", desc=False) \
         .limit(1) \
         .execute()
 
     sala_encontrada = None
-    if reserva_sala.data:
-        sala_encontrada = reserva_sala.data[0]
+    if resp_sala.data:
+        sala = resp_sala.data[0]
+        # Tentar reservar a sala encontrada atomicamente por ID
+        reserva_sala = supabase.table("salas_aposta") \
+            .update({"status": "reservando", "jogador2_id": google_id}) \
+            .eq("id", sala["id"]) \
+            .eq("status", "aguardando") \
+            .execute()
+        if reserva_sala.data:
+            sala_encontrada = reserva_sala.data[0]
 
     # 3. Debitar saldo do jogador
     debitar_result = supabase.rpc("debitar_saldo", {"p_google_id": google_id, "p_valor": valor}).execute()
