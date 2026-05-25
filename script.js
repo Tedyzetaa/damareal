@@ -756,6 +756,7 @@ async function registrarJogoNoServidor(resultado, valorAposta = 0) {
     if (partidaRegistrada) return;
     partidaRegistrada = true;
 
+    const credential = localStorage.getItem('dr_credential');
     let tipoEnvio = modoAtual || 'online';
     if (tipoEnvio === 'apostada')  tipoEnvio = 'aposta';
     if (tipoEnvio === 'searching') tipoEnvio = 'online';
@@ -769,7 +770,11 @@ async function registrarJogoNoServidor(resultado, valorAposta = 0) {
     };
     try {
         const res = await fetch(`${API}/registrar-jogo`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            method: 'POST', 
+            headers: { 
+                'Content-Type': 'application/json',
+                ...(credential ? { 'Authorization': `Bearer ${credential}` } : {})
+            },
             body: JSON.stringify(payload)
         });
         if (res.ok) {
