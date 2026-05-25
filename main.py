@@ -743,6 +743,15 @@ async def entrar_fila_aposta(request: Request, payload: EntrarFilaApostaPayload)
     google_id = payload.googleId
     valor = payload.valor
 
+    # Limpar salas antigas presas (mais de 30 minutos sem resolver)
+    supabase.table("salas_aposta") \
+        .update({"status": "cancelada"}) \
+        .in_("status", ["aguardando", "em_jogo"]) \
+        .or_(f"jogador1_id.eq.{google_id},jogador2_id.eq.{google_id}") \
+        .lt("created_at", (datetime.utcnow() - timedelta(minutes=30)).isoformat()) \
+        .execute()
+
+    # Só DEPOIS verificar se ainda está ativo
     # 1. Verificar se já está em fila ou partida ativa
     resp_existente = supabase.table("salas_aposta") \
         .select("id, status") \

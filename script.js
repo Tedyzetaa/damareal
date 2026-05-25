@@ -1264,17 +1264,21 @@ function iniciarPollingAposta(salaId, valor) {
     }, 2000);
 }
 
-function cancelarBuscaAposta() {
+async function cancelarBuscaAposta() {
     if (apostaPollingInterval) clearInterval(apostaPollingInterval);
-    fetch(`${API}/api/aposta/cancelar-fila`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ googleId: userProfile.googleId })
-    }).finally(() => {
-        document.getElementById('modalAguardandoOponente').style.display = 'none';
+    try {
+        await fetch(`${API}/api/aposta/cancelar-fila`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ googleId: userProfile.googleId })
+        });
         showToast("Busca cancelada.", "info");
+    } catch (e) {
+        console.error("Erro ao cancelar busca:", e);
+    } finally {
+        document.getElementById('modalAguardandoOponente').style.display = 'none';
         mudarTela('screenLobbySalas');
-    });
+    }
 }
 
 function conectarPartidaAposta(gameId, salaId, valorEntrada, premio, minhaCor) {
