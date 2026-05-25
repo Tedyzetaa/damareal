@@ -628,7 +628,10 @@ async def gerar_pix(request: Request, payload: dict):
     }
     result = sdk.payment().create(payment_data)
     if result["status"] != 201:
-        raise HTTPException(status_code=500, detail="Erro ao criar Pix")
+        erro_mp = result.get("response", {})
+        print(f"[MP ERROR] status={result['status']} response={erro_mp}")
+        causa = erro_mp.get("message") or erro_mp.get("error") or str(erro_mp)
+        raise HTTPException(status_code=500, detail=f"Erro MP: {causa}")
 
     payment_id = result["response"]["id"]
     qr_code = result["response"]["point_of_interaction"]["transaction_data"]["qr_code_base64"]
