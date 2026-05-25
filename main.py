@@ -772,8 +772,8 @@ async def entrar_fila_aposta(request: Request, payload: EntrarFilaApostaPayload)
         # Atualizar sala com segundo jogador
         game_id = str(uuid.uuid4())
         pote_total = valor * 2
-        premio = pote_total * 0.75
-        taxa_casa = pote_total * 0.25
+        premio = pote_total * 0.90
+        taxa_casa = pote_total * 0.10
 
         # Sortear cores no backend ao parear
         cores = ['w', 'b']

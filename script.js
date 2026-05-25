@@ -1132,7 +1132,7 @@ function renderizarBotoesAposta() {
     if (!grid) return;
     grid.innerHTML = '';
     for (let valor of VALORES_APOSTA) {
-        const premio = valor * 1.5;
+        const premio = valor * 1.8;
         const disabled = (userSaldo < valor);
         const card = document.createElement('div');
         card.className = `aposta-card ${disabled ? 'disabled' : ''}`;
@@ -1154,7 +1154,7 @@ function atualizarSaldoNaTelaAposta() {
 
 function abrirModalConfirmarAposta(valor, premio) {
     apostaValorSelecionado = valor;
-    const taxa = valor * 0.5; // 25% do pote (entrada *2 *0.25 = entrada*0.5)
+    const taxa = valor * 0.2; // 10% do pote (entrada *2 *0.10 = entrada*0.2)
     const saldoFinal = userSaldo - valor;
     document.getElementById('confirmaValor').textContent = `R$ ${valor.toFixed(2)}`;
     document.getElementById('confirmaPremio').textContent = `R$ ${premio.toFixed(2)}`;
