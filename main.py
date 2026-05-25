@@ -774,11 +774,20 @@ async def entrar_fila_aposta(request: Request, payload: EntrarFilaApostaPayload)
         pote_total = valor * 2
         premio = pote_total * 0.75
         taxa_casa = pote_total * 0.25
+
+        # Sortear cores no backend ao parear
+        cores = ['w', 'b']
+        random.shuffle(cores)
+        cor_jogador1 = cores[0]
+        cor_jogador2 = cores[1]
+
         supabase.table("salas_aposta") \
             .update({
                 "jogador2_id": google_id,
                 "status": "em_jogo",
                 "game_id": game_id,
+                "cor_jogador1": cor_jogador1,
+                "cor_jogador2": cor_jogador2,
                 "pote_total": pote_total,
                 "premio": premio,
                 "taxa_casa": taxa_casa,
@@ -800,6 +809,7 @@ async def entrar_fila_aposta(request: Request, payload: EntrarFilaApostaPayload)
             "status": "pareado",
             "sala_id": sala_id,
             "game_id": game_id,
+            "color": cor_jogador2,
             "valor_entrada": valor,
             "premio": premio
         }
@@ -846,7 +856,7 @@ async def cancelar_fila_aposta(request: Request, payload: CancelarFilaPayload):
 @app.get("/api/aposta/status/{sala_id}")
 async def status_sala_aposta(sala_id: str):
     resp = supabase.table("salas_aposta") \
-        .select("status, game_id, jogador1_id, jogador2_id, valor_entrada, premio") \
+        .select("status, game_id, jogador1_id, jogador2_id, valor_entrada, premio, cor_jogador1, cor_jogador2") \
         .eq("id", sala_id) \
         .execute()
     if not resp.data:

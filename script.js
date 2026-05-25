@@ -1190,7 +1190,7 @@ async function entrarFilaAposta(valor) {
         const data = await res.json();
         if (res.ok) {
             if (data.status === 'pareado') {
-                conectarPartidaAposta(data.game_id, data.sala_id, valor, data.premio);
+                conectarPartidaAposta(data.game_id, data.sala_id, valor, data.premio, data.color);
             } else {
                 apostaSalaId = data.sala_id;
                 document.getElementById('aguardandoValor').textContent = `R$ ${valor.toFixed(2)}`;
@@ -1213,8 +1213,11 @@ function iniciarPollingAposta(salaId, valor) {
             const data = await res.json();
             if (data.status === 'em_jogo') {
                 clearInterval(apostaPollingInterval);
+                const minhaCor = data.jogador1_id === userProfile.googleId
+                    ? data.cor_jogador1
+                    : data.cor_jogador2;
                 document.getElementById('modalAguardandoOponente').style.display = 'none';
-                conectarPartidaAposta(data.game_id, salaId, valor, data.premio);
+                conectarPartidaAposta(data.game_id, salaId, valor, data.premio, minhaCor);
             } else if (data.status === 'cancelada') {
                 clearInterval(apostaPollingInterval);
                 document.getElementById('modalAguardandoOponente').style.display = 'none';
@@ -1237,7 +1240,7 @@ function cancelarBuscaAposta() {
     });
 }
 
-function conectarPartidaAposta(gameId, salaId, valorEntrada, premio) {
+function conectarPartidaAposta(gameId, salaId, valorEntrada, premio, minhaCor) {
     if (ws) ws.close();
     modoAtual = 'aposta';
     window.apostaInfo = { valor: valorEntrada, premio: premio };
@@ -1246,12 +1249,11 @@ function conectarPartidaAposta(gameId, salaId, valorEntrada, premio) {
     currentBoard = [];
     partidaIdAtual = null;
     partidaRegistrada = false;
-    const corAleatoria = Math.random() < 0.5 ? 'w' : 'b';
-    minhaCorAtual = corAleatoria;
+    minhaCorAtual = minhaCor;
 
     limparChat();
     const wsProtocol = API.startsWith('https') ? 'wss' : 'ws';
-    ws = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/aposta/${salaId}/${corAleatoria}`);
+    ws = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/aposta/${salaId}/${minhaCor}`);
 
     ws.onopen = () => {
         mudarTela('screenGame');
