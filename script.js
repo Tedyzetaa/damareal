@@ -1271,10 +1271,14 @@ function iniciarPollingAposta(salaId, valor) {
 
 async function cancelarBuscaAposta() {
     if (apostaPollingInterval) clearInterval(apostaPollingInterval);
+    const credential = localStorage.getItem('dr_credential');
     try {
         await fetch(`${API}/api/aposta/cancelar-fila`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                ...(credential ? { 'Authorization': `Bearer ${credential}` } : {})
+            },
             body: JSON.stringify({ googleId: userProfile.googleId })
         });
         showToast("Busca cancelada.", "info");
