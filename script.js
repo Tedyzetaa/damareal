@@ -795,6 +795,12 @@ function fecharModalDepositoValor() {
 }
 
 async function confirmarDeposito() {
+    const credential = localStorage.getItem('dr_credential');
+    if (!credential) {
+        showToast("Você precisa estar logado para depositar.", "error");
+        return;
+    }
+
     const input = document.getElementById('depositoValorInput');
     let valor = parseFloat(input.value);
     if (isNaN(valor) || valor < 1) {
@@ -806,7 +812,10 @@ async function confirmarDeposito() {
     try {
         const res = await fetch(`${API}/api/finance/gerar-pix`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+                "Content-Type": "application/json",
+                ...(credential ? { "Authorization": `Bearer ${credential}` } : {})
+            },
             body: JSON.stringify({ googleId: userProfile.googleId, valor })
         });
         const data = await res.json();
