@@ -6,4 +6,4 @@ python-dotenv==1.0.1
 requests==2.31.0
 slowapi==0.1.9
 supabase==2.4.6
-mercadopago==2.1.11
+mercadopago
