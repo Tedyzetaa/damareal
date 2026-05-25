@@ -14,6 +14,9 @@ let partidaRegistrada = false;
 let minhaCorAtual   = 'w';
 let opponentPicture = ""; // foto do adversário atual
 
+let userSaldo = 0;            // saldo do usuário
+let saldoInterval = null;     // polling para atualização automática
+
 let userProfile = {
     googleId:      null,
     nick:          "",
@@ -740,12 +743,66 @@ async function registrarJogoNoServidor(resultado, valorAposta = 0) {
     }
 }
 
+function atualizarSaldoUI(saldo) {
+    userSaldo = saldo;
+    const saldoSpan = document.getElementById('userSaldo');
+    const saldoBox = document.getElementById('saldoContainer');
+    if (saldoSpan) {
+        saldoSpan.textContent = `R$ ${saldo.toFixed(2)}`;
+    }
+    if (saldoBox) {
+        saldoBox.style.display = 'flex';
+    }
+}
+
+async function buscarSaldoAtualizado() {
+    if (!userProfile.googleId) return;
+    try {
+        const res = await fetch(`${API}/api/finance/saldo/${userProfile.googleId}`);
+        if (res.ok) {
+            const data = await res.json();
+            if (data.saldo !== undefined) {
+                if (data.saldo !== userSaldo) {
+                    atualizarSaldoUI(data.saldo);
+                    showToast(`Saldo atualizado: R$ ${data.saldo.toFixed(2)}`, 'success', 3000);
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('Erro ao buscar saldo:', e);
+    }
+}
+
+function iniciarPollingSaldo() {
+    if (saldoInterval) clearInterval(saldoInterval);
+    saldoInterval = setInterval(() => {
+        // Atualiza se estiver logado e na tela de perfil ou menu
+        if (userProfile.googleId) {
+            buscarSaldoAtualizado();
+        }
+    }, 30000); 
+}
+
 async function solicitarDeposito() {
-    const valor = parseFloat(prompt("Valor do depósito (R$):"));
+    const modal = document.getElementById('modalDepositoValor');
+    const input = document.getElementById('depositoValorInput');
+    input.value = '';
+    modal.style.display = 'flex';
+}
+
+function fecharModalDepositoValor() {
+    document.getElementById('modalDepositoValor').style.display = 'none';
+}
+
+async function confirmarDeposito() {
+    const input = document.getElementById('depositoValorInput');
+    let valor = parseFloat(input.value);
     if (isNaN(valor) || valor < 1) {
         showToast("Valor inválido (mínimo R$1,00)", "error");
         return;
     }
+    fecharModalDepositoValor();
+
     try {
         const res = await fetch(`${API}/api/finance/gerar-pix`, {
             method: "POST",
@@ -761,6 +818,11 @@ async function solicitarDeposito() {
             qrImg.src = `data:image/png;base64,${data.qr_code}`;
             qrText.value = data.qr_text;
             modal.style.display = "flex";
+
+            // Tenta buscar o saldo logo após o pagamento
+            setTimeout(() => {
+                buscarSaldoAtualizado();
+            }, 8000);
         } else {
             showToast(data.detail || "Erro ao gerar Pix", "error");
         }
@@ -818,6 +880,8 @@ async function processarLogin(token) {
         userProfile.googleId = userData.google_id;
         userProfile.picture  = userData.picture;
 
+        atualizarSaldoUI(userData.saldo || 0);
+
         document.getElementById('googleBtnContainer').style.display = 'none';
         const ui = document.getElementById('userInfo');
         ui.style.display = 'flex';
@@ -828,6 +892,7 @@ async function processarLogin(token) {
 
         showToast(`Bem-vindo, ${nomeExibido}!`, 'success');
         await carregarPerfilDoServidor(userData.google_id);
+        iniciarPollingSaldo();
     } catch (err) {
         console.error("Erro no processamento do login:", err);
         document.getElementById('googleBtnContainer').style.display = 'block';

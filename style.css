@@ -1226,3 +1226,41 @@ body::before {
 .chat-panel--collapsed .chat-messages,
 .chat-panel--collapsed .chat-input-row { display: none; }
 .chat-panel--collapsed .chat-header { border-bottom: none; }
+
+/* Caixinha de saldo */
+.saldo-box {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--bg-raised);
+    border: 1px solid rgba(200,150,60,0.3);
+    border-radius: 50px;
+    padding: 4px 12px;
+    margin-left: auto;
+    margin-right: 12px;
+}
+
+.saldo-icon {
+    font-size: 14px;
+    color: var(--gold-bright);
+}
+
+.saldo-valor {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--gold-bright);
+    letter-spacing: 0.5px;
+}
+
+/* Botão Depositar com efeito glow verde */
+.btn-depositar {
+    background: linear-gradient(135deg, #1f8f62, #2ecc8a) !important;
+    box-shadow: 0 4px 12px rgba(46,204,138,0.3);
+    color: #000 !important;
+}
+.btn-depositar:hover {
+    background: linear-gradient(135deg, #2ecc8a, #1f8f62) !important;
+    box-shadow: 0 4px 20px rgba(46,204,138,0.6);
+    transform: translateY(-2px);
+}

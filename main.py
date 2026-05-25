@@ -64,34 +64,22 @@ async def lifespan(app: FastAPI):
 # ================================================================
 app = FastAPI(title="Damas Real - Server-Side Engine com IA", lifespan=lifespan)
 
-@app.options("/update-profile")
-async def options_update_profile():
-    return Response(
-        status_code=200,
-        headers={
-            "Access-Control-Allow-Origin":  "https://damareal1.vercel.app",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-        }
-    )
-
-limiter = Limiter(key_func=get_remote_address)
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
 origins = [
-    "http://localhost:6500",      # Local
-    "http://localhost:3000",      # Local frontend
-    "https://damareal1.vercel.app", # SEU FRONTEND NA VERCEL
+    "http://localhost:6500",
+    "https://damareal1.vercel.app",
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Permite todos os métodos (GET, POST, OPTIONS, etc.)
+    allow_headers=["*"],  # Permite todos os headers necessários
 )
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ================================================================
 # HELPERS UTILITÁRIOS
@@ -609,12 +597,19 @@ async def gerar_pix(payload: dict):
     valor = float(payload.get("valor", 0))
     if valor < 1:
         raise HTTPException(status_code=400, detail="Valor mínimo R$ 1,00")
-    
+
+    # Buscar email do usuário no Supabase
+    user = supabase.table("perfis").select("email").eq("google_id", google_id).execute()
+    if not user.data or not user.data[0].get("email"):
+        raise HTTPException(status_code=400, detail="Usuário sem e-mail cadastrado.")
+
+    email_usuario = user.data[0]["email"]
+
     payment_data = {
         "transaction_amount": valor,
         "description": f"Depósito Damas Real - {google_id}",
         "payment_method_id": "pix",
-        "payer": {"email": "usuario@exemplo.com"},  # ideal vir do perfil
+        "payer": {"email": email_usuario},
     }
     result = sdk.payment().create(payment_data)
     if result["status"] != 201:
@@ -650,26 +645,32 @@ async def webhook_mp(request: Request):
         payment = sdk.payment().get(payment_id)
         if payment["status"] == 200 and payment["response"]["status"] == "approved":
             valor = float(payment["response"]["transaction_amount"])
+
             # Atualiza transacao
             supabase.table("transacoes").update({
                 "status": "aprovado",
                 "updated_at": datetime.utcnow().isoformat()
             }).eq("payment_id", str(payment_id)).execute()
-            
-            # Atualiza saldo (atômico via verificação de duplicidade)
-            # Primeiro, marca transação como creditada para evitar race conditions
-            update_res = supabase.table("transacoes").update({
+
+            # Tenta atualizar o status de crédito apenas se ainda não tiver sido creditada (Atômico)
+            atualizado = supabase.table("transacoes").update({
                 "saldo_atualizado": True
             }).eq("payment_id", str(payment_id)).eq("saldo_atualizado", False).execute()
-            
-            if update_res.data:
-                # Incrementa saldo no perfil
-                user = supabase.table("perfis").select("saldo").eq("google_id", transacao["google_id"]).execute()
-                if user.data:
-                    saldo_atual = user.data[0]["saldo"] or 0.0
-                    novo_saldo = saldo_atual + valor
-                    supabase.table("perfis").update({"saldo": novo_saldo}).eq("google_id", transacao["google_id"]).execute()
+
+            if atualizado.data:
+                # Agora sim, incrementa o saldo via RPC (função SQL no banco)
+                supabase.rpc("incrementar_saldo", {
+                    "p_google_id": transacao["google_id"],
+                    "p_valor": valor
+                }).execute()
     return {"status": "ok"}
+
+@app.get("/api/finance/saldo/{google_id}")
+async def obter_saldo(google_id: str):
+    resp = supabase.table("perfis").select("saldo").eq("google_id", google_id).execute()
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    return {"saldo": float(resp.data[0].get("saldo") or 0.0)}
 
 # ================================================================
 # AUXILIARES DE MATCHMAKING VIA SUPABASE
