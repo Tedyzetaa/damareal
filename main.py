@@ -619,13 +619,15 @@ async def gerar_pix(payload: dict):
     qr_code = result["response"]["point_of_interaction"]["transaction_data"]["qr_code_base64"]
     qr_text = result["response"]["point_of_interaction"]["transaction_data"]["qr_code"]
     
+    # ALTERE PARA:
     supabase.table("transacoes").insert({
-        "google_id": google_id,
-        "valor": valor,
-        "payment_id": str(payment_id),
+        "google_id": usuario_id,
+        "mp_payment_id": id_do_mercado_pago, # <--- Nome corrigido!
+        "valor": valor_deposito,
+        "tipo": "deposito",
         "status": "pendente"
     }).execute()
-    
+        
     return {"qr_code": qr_code, "qr_text": qr_text, "payment_id": payment_id}
 
 @app.post("/api/finance/webhook")
