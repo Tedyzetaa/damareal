@@ -17,6 +17,14 @@ let opponentPicture = ""; // foto do adversário atual
 let userSaldo = 0;            // saldo do usuário
 let saldoInterval = null;     // polling para atualização automática
 
+// Variáveis para aposta
+let apostaSalaId = null;
+let apostaPollingInterval = null;
+let apostaValorSelecionado = null;
+
+// Valores permitidos e prêmios
+const VALORES_APOSTA = [1, 3, 5, 10, 20, 50];
+
 let userProfile = {
     googleId:      null,
     nick:          "",
@@ -662,21 +670,33 @@ function abrirModalFimJogo(winner, minhaCor) {
     const subtitle = document.getElementById('modalSubtitle');
     const btnRepeat = document.getElementById('btnJogarNovamente');
     let resultado;
+    let resultadoFinanceiro = '';
+
+    if (modoAtual === 'aposta' && window.apostaInfo) {
+        const { valor, premio } = window.apostaInfo;
+        if (winner === minhaCor) {
+            resultadoFinanceiro = `<br>💰 +R$ ${premio.toFixed(2)} creditado no seu saldo`;
+        } else if (winner === 'empate') {
+            resultadoFinanceiro = `<br>🔄 Aposta devolvida — R$ ${valor.toFixed(2)}`;
+        } else {
+            resultadoFinanceiro = `<br>💸 -R$ ${valor.toFixed(2)} debitado do seu saldo`;
+        }
+    }
 
     if (winner === minhaCor) {
         trophy.textContent   = '🏆';
         title.textContent    = 'Vitória!';
-        subtitle.textContent = modoAtual === 'ia' ? 'Você venceu a IA!' : `As ${winner === 'w' ? 'Brancas' : 'Pretas'} venceram.`;
+        subtitle.innerHTML = modoAtual === 'ia' ? 'Você venceu a IA!' : `As ${winner === 'w' ? 'Brancas' : 'Pretas'} venceram.${resultadoFinanceiro}`;
         resultado = 'vitoria';
     } else if (winner === 'empate') {
         trophy.textContent   = '🤝';
         title.textContent    = 'Empate';
-        subtitle.textContent = 'A partida terminou sem vencedor.';
+        subtitle.innerHTML = `A partida terminou sem vencedor.${resultadoFinanceiro}`;
         resultado = 'empate';
     } else {
         trophy.textContent   = modoAtual === 'ia' ? '💀' : '🏆';
         title.textContent    = modoAtual === 'ia' ? 'Derrota' : 'Vitória do Adversário';
-        subtitle.textContent = modoAtual === 'ia' ? 'A IA venceu desta vez.' : `As ${winner === 'w' ? 'Brancas' : 'Pretas'} venceram.`;
+        subtitle.innerHTML = modoAtual === 'ia' ? 'A IA venceu desta vez.' : `As ${winner === 'w' ? 'Brancas' : 'Pretas'} venceram.${resultadoFinanceiro}`;
         resultado = 'derrota';
     }
 
@@ -1096,4 +1116,169 @@ async function verificarLoginPersistente() {
     if (credential) {
         await processarLogin(credential);
     }
+}
+
+// ============================================================
+// LÓGICA DE APOSTAS
+// ============================================================
+function showLobbyApostas() {
+    mudarTela('screenLobbySalas');
+    renderizarBotoesAposta();
+    atualizarSaldoNaTelaAposta();
+}
+
+function renderizarBotoesAposta() {
+    const grid = document.getElementById('apostaValoresGrid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    for (let valor of VALORES_APOSTA) {
+        const premio = valor * 1.5;
+        const disabled = (userSaldo < valor);
+        const card = document.createElement('div');
+        card.className = `aposta-card ${disabled ? 'disabled' : ''}`;
+        card.innerHTML = `
+            <div class="aposta-valor">R$ ${valor.toFixed(2)}</div>
+            <div class="aposta-premio">prêmio: R$ ${premio.toFixed(2)}</div>
+        `;
+        if (!disabled) {
+            card.onclick = () => abrirModalConfirmarAposta(valor, premio);
+        }
+        grid.appendChild(card);
+    }
+}
+
+function atualizarSaldoNaTelaAposta() {
+    const span = document.getElementById('apostaSaldoAtual');
+    if (span) span.textContent = `R$ ${userSaldo.toFixed(2)}`;
+}
+
+function abrirModalConfirmarAposta(valor, premio) {
+    apostaValorSelecionado = valor;
+    const taxa = valor * 0.5; // 25% do pote (entrada *2 *0.25 = entrada*0.5)
+    const saldoFinal = userSaldo - valor;
+    document.getElementById('confirmaValor').textContent = `R$ ${valor.toFixed(2)}`;
+    document.getElementById('confirmaPremio').textContent = `R$ ${premio.toFixed(2)}`;
+    document.getElementById('confirmaTaxa').textContent = `R$ ${taxa.toFixed(2)}`;
+    document.getElementById('confirmaSaldoFinal').textContent = `R$ ${saldoFinal.toFixed(2)}`;
+    document.getElementById('modalConfirmarAposta').style.display = 'flex';
+}
+
+function fecharModalConfirmarAposta() {
+    document.getElementById('modalConfirmarAposta').style.display = 'none';
+}
+
+document.getElementById('btnConfirmarAposta').onclick = async () => {
+    fecharModalConfirmarAposta();
+    await entrarFilaAposta(apostaValorSelecionado);
+};
+
+async function entrarFilaAposta(valor) {
+    const credential = localStorage.getItem('dr_credential');
+    if (!credential || !userProfile.googleId) {
+        showToast("Você precisa estar logado.", "error");
+        return;
+    }
+    try {
+        const res = await fetch(`${API}/api/aposta/entrar-fila`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${credential}`
+            },
+            body: JSON.stringify({ googleId: userProfile.googleId, valor })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            if (data.status === 'pareado') {
+                conectarPartidaAposta(data.game_id, data.sala_id, valor, data.premio);
+            } else {
+                apostaSalaId = data.sala_id;
+                document.getElementById('aguardandoValor').textContent = `R$ ${valor.toFixed(2)}`;
+                document.getElementById('modalAguardandoOponente').style.display = 'flex';
+                iniciarPollingAposta(data.sala_id, valor);
+            }
+        } else {
+            showToast(data.detail || "Erro ao entrar na fila.", "error");
+        }
+    } catch (e) {
+        showToast("Erro de conexão.", "error");
+    }
+}
+
+function iniciarPollingAposta(salaId, valor) {
+    if (apostaPollingInterval) clearInterval(apostaPollingInterval);
+    apostaPollingInterval = setInterval(async () => {
+        try {
+            const res = await fetch(`${API}/api/aposta/status/${salaId}`);
+            const data = await res.json();
+            if (data.status === 'em_jogo') {
+                clearInterval(apostaPollingInterval);
+                document.getElementById('modalAguardandoOponente').style.display = 'none';
+                conectarPartidaAposta(data.game_id, salaId, valor, data.premio);
+            } else if (data.status === 'cancelada') {
+                clearInterval(apostaPollingInterval);
+                document.getElementById('modalAguardandoOponente').style.display = 'none';
+                showToast("Sala cancelada.", "error");
+            }
+        } catch (e) {}
+    }, 2000);
+}
+
+function cancelarBuscaAposta() {
+    if (apostaPollingInterval) clearInterval(apostaPollingInterval);
+    fetch(`${API}/api/aposta/cancelar-fila`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ googleId: userProfile.googleId })
+    }).finally(() => {
+        document.getElementById('modalAguardandoOponente').style.display = 'none';
+        showToast("Busca cancelada.", "info");
+        mudarTela('screenLobbySalas');
+    });
+}
+
+function conectarPartidaAposta(gameId, salaId, valorEntrada, premio) {
+    if (ws) ws.close();
+    modoAtual = 'aposta';
+    window.apostaInfo = { valor: valorEntrada, premio: premio };
+    capturedByWhite = 0;
+    capturedByBlack = 0;
+    currentBoard = [];
+    partidaIdAtual = null;
+    partidaRegistrada = false;
+    const corAleatoria = Math.random() < 0.5 ? 'w' : 'b';
+    minhaCorAtual = corAleatoria;
+
+    limparChat();
+    const wsProtocol = API.startsWith('https') ? 'wss' : 'ws';
+    ws = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/aposta/${salaId}/${corAleatoria}`);
+
+    ws.onopen = () => {
+        mudarTela('screenGame');
+        renderizarCoordenadas();
+        renderCaptureDots();
+        const btnAbandono = document.getElementById('btn-surrender');
+        if (btnAbandono) {
+            btnAbandono.textContent = '🏳 Abandonar';
+            btnAbandono.onclick = confirmarAbandono;
+        }
+        showToast(`Aposta R$ ${valorEntrada} — prêmio R$ ${premio}`, "success", 5000);
+        let banner = document.getElementById('apostaBanner');
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.id = 'apostaBanner';
+            banner.className = 'aposta-banner';
+            const topbar = document.querySelector('.game-topbar');
+            topbar.parentNode.insertBefore(banner, topbar);
+        }
+        banner.innerHTML = `💰 APOSTA: R$ ${valorEntrada}  →  Prêmio: R$ ${premio}`;
+        banner.style.display = 'block';
+    };
+    ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), minhaCorAtual);
+    ws.onclose = () => {
+        if (modoAtual === 'aposta') {
+            showToast("Partida encerrada.", "info");
+            mudarTela('screenMenu');
+        }
+    };
 }

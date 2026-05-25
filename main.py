@@ -30,7 +30,7 @@ load_dotenv()
 BASE_URL         = os.environ.get("BASE_URL", "http://localhost:6500")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 SUPABASE_URL     = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY     = os.environ.get("SUPABASE_ANON_KEY")
+SUPABASE_KEY     = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 MP_ACCESS_TOKEN  = os.environ.get("MP_ACCESS_TOKEN")
 MP_WEBHOOK_SECRET = os.environ.get("MP_WEBHOOK_SECRET")  # IMPORTANTE: configurar no ambiente
 
@@ -145,6 +145,25 @@ class RegistrarJogoPayload(BaseModel):
         if v not in ('vitoria', 'derrota', 'empate'):
             raise ValueError("resultado deve ser 'vitoria', 'derrota' ou 'empate'")
         return v
+
+class EntrarFilaApostaPayload(BaseModel):
+    googleId: str
+    valor: float
+
+    @field_validator('valor')
+    @classmethod
+    def valor_valido(cls, v):
+        if v not in [1, 3, 5, 10, 20, 50]:
+            raise ValueError("Valor deve ser 1, 3, 5, 10, 20 ou 50")
+        return v
+
+class FinalizarApostaPayload(BaseModel):
+    sala_id: str
+    vencedor_id: str   # google_id ou "empate"
+    googleId: str
+
+class CancelarFilaPayload(BaseModel):
+    googleId: str
 
 # ================================================================
 # ENGINE DE DAMAS (completa e inalterada)
@@ -712,6 +731,143 @@ async def obter_saldo(google_id: str):
     return {"saldo": float(resp.data[0].get("saldo") or 0.0)}
 
 # ================================================================
+# ENDPOINTS DE APOSTA
+# ================================================================
+@app.post("/api/aposta/entrar-fila")
+async def entrar_fila_aposta(request: Request, payload: EntrarFilaApostaPayload):
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token ausente")
+    token = auth_header.split(" ")[1]
+    id_info = verificar_token_google(token, payload.googleId)
+    google_id = payload.googleId
+    valor = payload.valor
+
+    # Verificar se já está em fila ou partida ativa
+    resp_existente = supabase.table("salas_aposta") \
+        .select("id, status") \
+        .or_(f"jogador1_id.eq.{google_id},jogador2_id.eq.{google_id}") \
+        .in_("status", ["aguardando", "em_jogo"]) \
+        .execute()
+    if resp_existente.data:
+        raise HTTPException(status_code=409, detail="Você já está em uma sala ativa")
+
+    # Debitar saldo atomicamente
+    result = supabase.rpc("debitar_saldo", {"p_google_id": google_id, "p_valor": valor}).execute()
+    if not result.data:
+        raise HTTPException(status_code=402, detail="Saldo insuficiente")
+
+    # Procurar sala aguardando com mesmo valor
+    resp_sala = supabase.table("salas_aposta") \
+        .select("*") \
+        .eq("status", "aguardando") \
+        .eq("valor_entrada", valor) \
+        .is_("jogador2_id", "null") \
+        .limit(1) \
+        .execute()
+    
+    if resp_sala.data:
+        sala = resp_sala.data[0]
+        sala_id = sala["id"]
+        # Atualizar sala com segundo jogador
+        game_id = str(uuid.uuid4())
+        pote_total = valor * 2
+        premio = pote_total * 0.75
+        taxa_casa = pote_total * 0.25
+        supabase.table("salas_aposta") \
+            .update({
+                "jogador2_id": google_id,
+                "status": "em_jogo",
+                "game_id": game_id,
+                "pote_total": pote_total,
+                "premio": premio,
+                "taxa_casa": taxa_casa,
+                "updated_at": datetime.utcnow().isoformat()
+            }) \
+            .eq("id", sala_id) \
+            .execute()
+        # Inicializar estado do jogo (tabuleiro)
+        salas.partidas[game_id] = {
+            "board": DamasEngine.criar_tabuleiro_inicial(),
+            "turn": "w",
+            "regras": "brasileira",
+            "partida_id": str(uuid.uuid4()),
+            "sala_id": sala_id,
+            "valor_entrada": valor,
+            "premio": premio
+        }
+        return {
+            "status": "pareado",
+            "sala_id": sala_id,
+            "game_id": game_id,
+            "valor_entrada": valor,
+            "premio": premio
+        }
+    else:
+        # Criar nova sala
+        nova_sala = {
+            "valor_entrada": valor,
+            "status": "aguardando",
+            "jogador1_id": google_id,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        res_insert = supabase.table("salas_aposta").insert(nova_sala).execute()
+        sala_id = res_insert.data[0]["id"]
+        return {"status": "aguardando", "sala_id": sala_id}
+
+@app.post("/api/aposta/cancelar-fila")
+async def cancelar_fila_aposta(request: Request, payload: CancelarFilaPayload):
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token ausente")
+    token = auth_header.split(" ")[1]
+    verificar_token_google(token, payload.googleId)
+    google_id = payload.googleId
+
+    # Buscar sala aguardando do jogador
+    resp = supabase.table("salas_aposta") \
+        .select("id, valor_entrada") \
+        .eq("status", "aguardando") \
+        .eq("jogador1_id", google_id) \
+        .is_("jogador2_id", "null") \
+        .execute()
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Nenhuma sala aguardando encontrada")
+    sala = resp.data[0]
+    sala_id = sala["id"]
+    valor = sala["valor_entrada"]
+
+    # Devolver saldo
+    supabase.rpc("creditar_saldo", {"p_google_id": google_id, "p_valor": valor}).execute()
+    # Cancelar sala
+    supabase.table("salas_aposta").update({"status": "cancelada"}).eq("id", sala_id).execute()
+    return {"status": "cancelado"}
+
+@app.get("/api/aposta/status/{sala_id}")
+async def status_sala_aposta(sala_id: str):
+    resp = supabase.table("salas_aposta") \
+        .select("status, game_id, jogador1_id, jogador2_id, valor_entrada, premio") \
+        .eq("id", sala_id) \
+        .execute()
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Sala não encontrada")
+    return resp.data[0]
+
+@app.post("/api/aposta/finalizar")
+async def finalizar_aposta(request: Request, payload: FinalizarApostaPayload):
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token ausente")
+    token = auth_header.split(" ")[1]
+    verificar_token_google(token, payload.googleId)
+    # Chamar a RPC finalizar_sala_aposta (idempotente)
+    supabase.rpc("finalizar_sala_aposta", {
+        "p_sala_id": payload.sala_id,
+        "p_vencedor_id": payload.vencedor_id
+    }).execute()
+    return {"status": "finalizado"}
+
+# ================================================================
 # AUXILIARES DE MATCHMAKING VIA SUPABASE
 # ================================================================
 async def inserir_na_fila(jogador_id: str):
@@ -903,6 +1059,116 @@ async def websocket_partida_endpoint(websocket: WebSocket, game_id: str, player_
         "type": "init", "board": partida["board"],
         "turn": partida["turn"], "regras": partida["regras"]
     }))
+    try:
+        while True:
+            msg = json.loads(await websocket.receive_text())
+            if msg.get("type") == "move" and partida["turn"] == player_color:
+                rf, cf = algebraic_to_index(msg["from"])
+                rt, ct = algebraic_to_index(msg["to"])
+
+                tem_que_comer = DamasEngine.jogador_tem_capturas_possiveis(
+                    partida["board"], player_color, partida["regras"]
+                )
+                movimento_eh_captura = abs(rf - rt) >= 2
+                if tem_que_comer and not movimento_eh_captura:
+                    await websocket.send_text(json.dumps({
+                        "type":    "invalid_move",
+                        "message": "Movimento inválido! Você é obrigado a capturar uma peça adversária."
+                    }))
+                    continue
+
+                ok, nb, motivo = DamasEngine.validar_e_mover(
+                    partida["board"], rf, cf, rt, ct, player_color, partida["regras"]
+                )
+                if ok:
+                    partida["board"] = nb
+                    if motivo:
+                        await salas.broadcast(game_id, {
+                            "type": "update", "board": nb,
+                            "turn": player_color, "regras": partida["regras"],
+                            "must_continue": True, "piece": [rt, ct]
+                        })
+                    else:
+                        partida["turn"] = "b" if player_color == "w" else "w"
+                        venc = DamasEngine.verificar_fim_de_jogo(nb, partida["regras"])
+                        if venc:
+                            await salas.broadcast(game_id, {
+                                "type": "game_over", "winner": venc,
+                                "partida_id": partida["partida_id"], "board": nb
+                            })
+                        else:
+                            await salas.broadcast(game_id, {
+                                "type": "update", "board": nb,
+                                "turn": partida["turn"], "regras": partida["regras"]
+                            })
+                else:
+                    await websocket.send_text(json.dumps({"type": "invalid_move", "message": motivo}))
+            elif msg.get("type") == "chat":
+                nick = str(msg.get("nick", "Jogador"))[:30]
+                text = str(msg.get("text", ""))[:200].strip()
+                sender_id = str(msg.get("sender_id", ""))
+                if text:
+                    await salas.broadcast(game_id, {
+                        "type": "chat",
+                        "nick": nick,
+                        "text": text,
+                        "sender_id": sender_id,
+                        "timestamp": datetime.now().strftime("%H:%M")
+                    })
+            elif msg.get("type") == "config_rules":
+                partida["regras"] = msg.get("regras", "brasileira")
+                await salas.broadcast(game_id, {
+                    "type": "update", "board": partida["board"],
+                    "turn": partida["turn"], "regras": partida["regras"]
+                })
+    except WebSocketDisconnect:
+        await salas.broadcast(game_id, {
+            "type": "opponent_left",
+            "message": "O adversário se desconectou."
+        })
+        salas.desconectar(game_id, websocket)
+
+# ================================================================
+# WEBSOCKET — PARTIDA APOSTADA
+# ================================================================
+@app.websocket("/ws/aposta/{sala_id}/{player_color}")
+async def websocket_aposta_endpoint(websocket: WebSocket, sala_id: str, player_color: str):
+    # Buscar sala e obter game_id
+    resp = supabase.table("salas_aposta") \
+        .select("game_id, status, valor_entrada, premio, jogador1_id, jogador2_id") \
+        .eq("id", sala_id) \
+        .execute()
+    if not resp.data or resp.data[0]["status"] != "em_jogo":
+        await websocket.close(code=1008, reason="Sala não disponível")
+        return
+    sala = resp.data[0]
+    game_id = sala["game_id"]
+    if not game_id:
+        await websocket.close(code=1008, reason="Partida não iniciada")
+        return
+
+    # Conectar ao gerenciador de salas
+    await salas.conectar(game_id, websocket)
+    if game_id not in salas.partidas:
+        salas.partidas[game_id] = {
+            "board": DamasEngine.criar_tabuleiro_inicial(),
+            "turn": "w",
+            "regras": "brasileira",
+            "partida_id": str(uuid.uuid4()),
+            "sala_id": sala_id,
+            "valor_entrada": sala["valor_entrada"],
+            "premio": sala["premio"]
+        }
+    partida = salas.partidas[game_id]
+
+    await websocket.send_text(json.dumps({
+        "type": "init", "board": partida["board"],
+        "turn": partida["turn"], "regras": partida["regras"],
+        "is_aposta": True,
+        "valor_entrada": partida["valor_entrada"],
+        "premio": partida["premio"]
+    }))
+
     try:
         while True:
             msg = json.loads(await websocket.receive_text())
