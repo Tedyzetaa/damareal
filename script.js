@@ -811,18 +811,12 @@ async function confirmarDeposito() {
         });
         const data = await res.json();
         if (res.ok) {
-            // Exibe modal com QR Code e código copia e cola
             const modal = document.getElementById("modalDeposito");
             const qrImg = document.getElementById("depositoQR");
             const qrText = document.getElementById("depositoCodigo");
             qrImg.src = `data:image/png;base64,${data.qr_code}`;
             qrText.value = data.qr_text;
             modal.style.display = "flex";
-
-            // Tenta buscar o saldo logo após o pagamento
-            setTimeout(() => {
-                buscarSaldoAtualizado();
-            }, 8000);
         } else {
             showToast(data.detail || "Erro ao gerar Pix", "error");
         }

@@ -4,6 +4,8 @@ import os
 import random
 import re
 import uuid
+import hmac
+import hashlib
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -30,12 +32,15 @@ GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 SUPABASE_URL     = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY     = os.environ.get("SUPABASE_ANON_KEY")
 MP_ACCESS_TOKEN  = os.environ.get("MP_ACCESS_TOKEN")
+MP_WEBHOOK_SECRET = os.environ.get("MP_WEBHOOK_SECRET")  # IMPORTANTE: configurar no ambiente
 
 if not SUPABASE_URL or not SUPABASE_KEY or not GOOGLE_CLIENT_ID or not MP_ACCESS_TOKEN:
     raise RuntimeError(
         "Variáveis obrigatórias ausentes: SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_CLIENT_ID, MP_ACCESS_TOKEN. "
         "Configure-as no painel do Render ou no arquivo .env."
     )
+if not MP_WEBHOOK_SECRET:
+    print("⚠️ AVISO: MP_WEBHOOK_SECRET não configurado. Webhook ficará vulnerável.")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
@@ -73,8 +78,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],  # Permite todos os métodos (GET, POST, OPTIONS, etc.)
-    allow_headers=["*"],  # Permite todos os headers necessários
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 limiter = Limiter(key_func=get_remote_address)
@@ -104,6 +109,15 @@ def algebraic_to_index(coord: str) -> Tuple[int, int]:
 
 def index_to_algebraic(row: int, col: int) -> str:
     return f"{chr(ord('A') + col)}{8 - row}"
+
+def verificar_token_google(token: str, google_id_esperado: str = None) -> dict:
+    try:
+        id_info = id_token.verify_oauth2_token(token, google_requests.Request(), GOOGLE_CLIENT_ID)
+        if google_id_esperado and id_info['sub'] != google_id_esperado:
+            raise HTTPException(status_code=403, detail="Token não corresponde ao googleId informado.")
+        return id_info
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Token inválido: {str(e)}")
 
 # ================================================================
 # MODELOS PYDANTIC
@@ -424,7 +438,6 @@ async def auth_google(request: Request, payload: AuthToken):
     picture_google = id_info.get('picture', '')
 
     try:
-        # Verifica se o perfil ja existe para nao sobrescrever foto personalizada
         res_existente = supabase.table("perfis").select("foto_url").eq("google_id", google_id).execute()
         tem_foto_custom = bool(res_existente.data and res_existente.data[0].get("foto_url"))
 
@@ -433,7 +446,6 @@ async def auth_google(request: Request, payload: AuthToken):
             "nome":      nome_google,
             "email":     email_google,
         }
-        # So usa a foto do Google se o usuario ainda nao enviou uma personalizada
         if not tem_foto_custom:
             upsert_data["foto_url"] = picture_google
 
@@ -461,19 +473,11 @@ async def update_profile(
     dados:    str = Form(...),
     googleId: str = Form(...)
 ):
-    # Autenticação obrigatória
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Token de autenticação ausente.")
     token = auth_header.split(" ")[1]
-    try:
-        id_info = id_token.verify_oauth2_token(token, google_requests.Request(), GOOGLE_CLIENT_ID)
-        if id_info['sub'] != googleId:
-            raise HTTPException(status_code=403, detail="Não autorizado a alterar este perfil.")
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=401, detail="Token inválido ou expirado.")
+    verificar_token_google(token, googleId)
 
     perfil_json = json.loads(dados)
 
@@ -505,7 +509,6 @@ async def update_profile(
             raise HTTPException(status_code=413, detail="A foto deve ter no máximo 5 MB.")
 
         ext_final   = content_type_map.get(foto.content_type, ext)
-        # Usa apenas o googleId como nome do arquivo (sem subpasta redundante)
         bucket_path = f"{googleId}{ext_final}"
         try:
             supabase.storage.from_("avatars").upload(
@@ -514,8 +517,6 @@ async def update_profile(
             )
         except Exception as upload_err:
             err_msg = str(upload_err)
-            # Supabase retorna erro se o arquivo já existe e upsert não funciona;
-            # tenta update como fallback
             try:
                 supabase.storage.from_("avatars").update(
                     bucket_path, foto_bytes,
@@ -552,7 +553,14 @@ async def get_profile(google_id: str):
     return data
 
 @app.post("/registrar-jogo")
-async def registrar_jogo(payload: RegistrarJogoPayload):
+async def registrar_jogo(request: Request, payload: RegistrarJogoPayload):
+    # Autenticação obrigatória
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token de autenticação ausente.")
+    token = auth_header.split(" ")[1]
+    id_info = verificar_token_google(token, payload.googleId)
+
     partida_id = payload.partida_id or str(uuid.uuid4())
 
     res_check = supabase.table("historico").select("id").eq("partida_id", partida_id).execute()
@@ -592,8 +600,15 @@ async def registrar_jogo(payload: RegistrarJogoPayload):
     }
 
 @app.post("/api/finance/gerar-pix")
-async def gerar_pix(payload: dict):
+async def gerar_pix(request: Request, payload: dict):
+    # Autenticação obrigatória
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token de autenticação ausente.")
+    token = auth_header.split(" ")[1]
     google_id = payload.get("googleId")
+    verificar_token_google(token, google_id)
+
     valor = float(payload.get("valor", 0))
     if valor < 1:
         raise HTTPException(status_code=400, detail="Valor mínimo R$ 1,00")
@@ -614,57 +629,76 @@ async def gerar_pix(payload: dict):
     result = sdk.payment().create(payment_data)
     if result["status"] != 201:
         raise HTTPException(status_code=500, detail="Erro ao criar Pix")
-    
+
     payment_id = result["response"]["id"]
     qr_code = result["response"]["point_of_interaction"]["transaction_data"]["qr_code_base64"]
     qr_text = result["response"]["point_of_interaction"]["transaction_data"]["qr_code"]
-    
-    # ALTERE PARA:
+
+    # Inserir transação com os nomes de coluna corretos
     supabase.table("transacoes").insert({
-        "google_id": usuario_id,
-        "mp_payment_id": id_do_mercado_pago, # <--- Nome corrigido!
-        "valor": valor_deposito,
+        "google_id": google_id,
+        "mp_payment_id": payment_id,    # coluna: mp_payment_id
+        "valor": valor,
         "tipo": "deposito",
         "status": "pendente"
     }).execute()
-        
+
     return {"qr_code": qr_code, "qr_text": qr_text, "payment_id": payment_id}
 
 @app.post("/api/finance/webhook")
 async def webhook_mp(request: Request):
+    # 1. Validar assinatura (segurança)
+    if MP_WEBHOOK_SECRET:
+        signature = request.headers.get("x-signature", "")
+        if not signature:
+            raise HTTPException(status_code=401, detail="Assinatura ausente")
+        body = await request.body()
+        expected = hmac.new(
+            MP_WEBHOOK_SECRET.encode(),
+            body,
+            hashlib.sha256
+        ).hexdigest()
+        # O formato é algo como "v1=hash"
+        parts = signature.split("v1=")
+        if len(parts) < 2 or not hmac.compare_digest(expected, parts[1]):
+            raise HTTPException(status_code=401, detail="Assinatura inválida")
+    else:
+        print("⚠️ Webhook sem validação de assinatura (MP_WEBHOOK_SECRET não definido)")
+
     data = await request.json()
     if data.get("type") == "payment":
-        payment_id = data["data"]["id"]
-        # Busca transação
-        resp = supabase.table("transacoes").select("*").eq("payment_id", str(payment_id)).execute()
+        payment_id = data["data"]["id"]  # id do pagamento (inteiro)
+        # Busca transação pela coluna correta: mp_payment_id (é um bigint)
+        resp = supabase.table("transacoes").select("*").eq("mp_payment_id", int(payment_id)).execute()
         if not resp.data:
             return {"status": "ignored"}
         transacao = resp.data[0]
+
+        # Já processado?
         if transacao.get("status") == "aprovado" or transacao.get("saldo_atualizado"):
             return {"status": "already_processed"}
-        
+
         # Consulta MP
         payment = sdk.payment().get(payment_id)
         if payment["status"] == 200 and payment["response"]["status"] == "approved":
             valor = float(payment["response"]["transaction_amount"])
 
-            # Atualiza transacao
-            supabase.table("transacoes").update({
-                "status": "aprovado",
-                "updated_at": datetime.utcnow().isoformat()
-            }).eq("payment_id", str(payment_id)).execute()
-
-            # Tenta atualizar o status de crédito apenas se ainda não tiver sido creditada (Atômico)
-            atualizado = supabase.table("transacoes").update({
-                "saldo_atualizado": True
-            }).eq("payment_id", str(payment_id)).eq("saldo_atualizado", False).execute()
-
-            if atualizado.data:
-                # Agora sim, incrementa o saldo via RPC (função SQL no banco)
-                supabase.rpc("incrementar_saldo", {
-                    "p_google_id": transacao["google_id"],
+            # Atualização atômica via RPC (ver SQL abaixo)
+            # Chama a função SQL que só aumenta o saldo se a transação ainda não tiver sido creditada
+            try:
+                supabase.rpc("incrementar_saldo_atomico", {
+                    "p_transacao_id": transacao["id"],
                     "p_valor": valor
                 }).execute()
+                # Atualiza status da transação para aprovado (opcional, a RPC já pode fazer isso)
+                supabase.table("transacoes").update({
+                    "status": "aprovado",
+                    "updated_at": datetime.utcnow().isoformat()
+                }).eq("id", transacao["id"]).execute()
+            except Exception as e:
+                print(f"[WEBHOOK] Erro ao processar: {e}")
+                return {"status": "error", "detail": str(e)}
+
     return {"status": "ok"}
 
 @app.get("/api/finance/saldo/{google_id}")
@@ -733,7 +767,6 @@ async def websocket_lobby_endpoint(websocket: WebSocket, google_id: str = None):
 
     try:
         while True:
-            # Verifica mensagem de cancelamento
             try:
                 msg  = await asyncio.wait_for(websocket.receive_text(), timeout=2.0)
                 data = json.loads(msg)
@@ -747,17 +780,14 @@ async def websocket_lobby_endpoint(websocket: WebSocket, google_id: str = None):
             except asyncio.TimeoutError:
                 pass
 
-            # 1. Verifica se já foi pareado por outro jogador (polling do próprio status)
             consulta = supabase.table("fila_espera") \
                 .select("status, partida_id") \
                 .eq("jogador_id", google_id) \
                 .execute()
             if consulta.data and consulta.data[0]["status"] == "pareado":
                 partida_id = consulta.data[0]["partida_id"]
-                # Busca a cor que foi atribuída (armazenada no match_info pelo outro jogador)
                 info = match_info.pop(google_id, None)
-                cor = info["color"] if (info and "color" in info) else 'b' # Se o outro é 'w', eu sou 'b'
-                # Busca o nick do oponente (opcional)
+                cor = info["color"] if (info and "color" in info) else 'b'
                 resp_op = supabase.table("fila_espera") \
                     .select("jogador_id") \
                     .eq("partida_id", partida_id) \
@@ -778,28 +808,24 @@ async def websocket_lobby_endpoint(websocket: WebSocket, google_id: str = None):
                 await websocket.close()
                 return
 
-            # 2. Tenta encontrar um oponente e parear
             async with lobby_lock:
                 oponente = await buscar_oponente(google_id)
                 if not oponente:
                     continue
 
-                # Reserva atômica do oponente
                 reserva = supabase.table("fila_espera") \
                     .update({"status": "emparelhando"}) \
                     .eq("jogador_id", oponente["jogador_id"]) \
                     .eq("status", "aguardando") \
                     .execute()
                 if not reserva.data:
-                    continue  # oponente já foi pego
+                    continue
 
-                # Cores aleatórias
                 cores = ['w', 'b']
                 random.shuffle(cores)
                 cor_atual = cores[0]
                 cor_op = cores[1]
 
-                # Cria sala
                 game_id = f"online_{uuid.uuid4().hex[:8]}"
                 salas.partidas[game_id] = {
                     "board":      DamasEngine.criar_tabuleiro_inicial(),
@@ -808,7 +834,6 @@ async def websocket_lobby_endpoint(websocket: WebSocket, google_id: str = None):
                     "partida_id": str(uuid.uuid4())
                 }
 
-                # Atualiza fila
                 supabase.table("fila_espera") \
                     .update({"status": "pareado", "partida_id": game_id}) \
                     .eq("jogador_id", google_id) \
@@ -836,7 +861,6 @@ async def websocket_lobby_endpoint(websocket: WebSocket, google_id: str = None):
                     "opponent_picture": perfil_self["picture"]
                 }
 
-                # Notifica oponente se estiver conectado, senão guarda no match_info
                 opp_ws = lobby_connections.pop(oponente["jogador_id"], None)
                 if opp_ws:
                     try:
@@ -847,7 +871,6 @@ async def websocket_lobby_endpoint(websocket: WebSocket, google_id: str = None):
                 else:
                     match_info[oponente["jogador_id"]] = msg_opp
 
-                # Notifica jogador atual
                 lobby_connections.pop(google_id, None)
                 await websocket.send_text(json.dumps(msg_self))
                 await websocket.close()
@@ -1020,7 +1043,6 @@ async def websocket_ia_endpoint(websocket: WebSocket, game_id: str, player_color
         "type": "init", "board": p["board"], "turn": p["turn"], "regras": p["regras"]
     }))
 
-    # Se o jogador é preto, a IA (brancas) começa
     if player_color == "b":
         await asyncio.sleep(0.5)
         await _executar_turno_ia(websocket, p)
