@@ -166,6 +166,83 @@ class CancelarFilaPayload(BaseModel):
     googleId: str
 
 # ================================================================
+# NOVA FUNÇÃO: PROCESSAR FIM DE PARTIDA APOSTADA
+# ================================================================
+async def processar_fim_partida_aposta(sala_id: str, vencedor_id: str):
+    """
+    Finaliza a sala de aposta: credita o prêmio ao vencedor,
+    registra histórico para ambos e atualiza status.
+    Idempotente: se a sala já estiver finalizada, não faz nada.
+    """
+    try:
+        # Buscar sala com todos os dados necessários
+        sala_resp = supabase.table("salas_aposta").select(
+            "status, valor_entrada, premio, jogador1_id, jogador2_id"
+        ).eq("id", sala_id).execute()
+        if not sala_resp.data:
+            print(f"[APOSTA] Sala {sala_id} não encontrada")
+            return
+        sala = sala_resp.data[0]
+        if sala["status"] == "finalizada":
+            print(f"[APOSTA] Sala {sala_id} já finalizada, ignorando")
+            return
+        if sala["status"] != "em_jogo":
+            print(f"[APOSTA] Sala {sala_id} não está em jogo (status={sala['status']})")
+            return
+
+        valor_entrada = float(sala["valor_entrada"])
+        premio = float(sala["premio"])
+        jogador1 = sala["jogador1_id"]
+        jogador2 = sala["jogador2_id"]
+
+        # Caso empate (vencedor_id == "empate") – devolver os valores
+        if vencedor_id == "empate":
+            # Devolver entrada para ambos
+            supabase.rpc("creditar_saldo", {"p_google_id": jogador1, "p_valor": valor_entrada}).execute()
+            supabase.rpc("creditar_saldo", {"p_google_id": jogador2, "p_valor": valor_entrada}).execute()
+            # Registrar histórico de empate
+            for gid in [jogador1, jogador2]:
+                supabase.table("historico").insert({
+                    "partida_id": sala_id,
+                    "google_id": gid,
+                    "tipo": "aposta",
+                    "resultado": "empate",
+                    "valor": valor_entrada,
+                    "delta_saldo": 0
+                }).execute()
+        else:
+            # Vencedor real: credita prêmio
+            supabase.rpc("creditar_saldo", {"p_google_id": vencedor_id, "p_valor": premio}).execute()
+            perdedor_id = jogador2 if vencedor_id == jogador1 else jogador1
+            # Registrar vitória/derrota
+            supabase.table("historico").insert({
+                "partida_id": sala_id,
+                "google_id": vencedor_id,
+                "tipo": "aposta",
+                "resultado": "vitoria",
+                "valor": valor_entrada,
+                "delta_saldo": premio
+            }).execute()
+            supabase.table("historico").insert({
+                "partida_id": sala_id,
+                "google_id": perdedor_id,
+                "tipo": "aposta",
+                "resultado": "derrota",
+                "valor": valor_entrada,
+                "delta_saldo": -valor_entrada
+            }).execute()
+
+        # Atualizar status da sala para finalizada
+        supabase.table("salas_aposta").update({
+            "status": "finalizada",
+            "updated_at": datetime.utcnow().isoformat()
+        }).eq("id", sala_id).execute()
+        print(f"[APOSTA] Sala {sala_id} finalizada. Vencedor: {vencedor_id}")
+
+    except Exception as e:
+        print(f"[APOSTA] Erro ao finalizar sala {sala_id}: {e}")
+
+# ================================================================
 # ENGINE DE DAMAS (completa e inalterada)
 # ================================================================
 class DamasEngine:
@@ -1151,6 +1228,15 @@ async def websocket_partida_endpoint(websocket: WebSocket, game_id: str, player_
                         partida["turn"] = "b" if player_color == "w" else "w"
                         venc = DamasEngine.verificar_fim_de_jogo(nb, partida["regras"])
                         if venc:
+                            # --- NOVO: processar crédito ---
+                            # Determinar vencedor real (google_id)
+                            cor_vencedor = venc
+                            jogador1_id = partida.get("jogador1_id")
+                            jogador2_id = partida.get("jogador2_id")
+                            cor_j1 = partida.get("cor_jogador1")
+                            vencedor_id = jogador1_id if cor_vencedor == cor_j1 else jogador2_id
+                            await processar_fim_partida_aposta(sala_id, vencedor_id)
+
                             await salas.broadcast(game_id, {
                                 "type": "game_over", "winner": venc,
                                 "partida_id": partida["partida_id"], "board": nb
