@@ -740,6 +740,39 @@ async function registrarJogoNoServidor(resultado, valorAposta = 0) {
     }
 }
 
+async function solicitarDeposito() {
+    const valor = parseFloat(prompt("Valor do depósito (R$):"));
+    if (isNaN(valor) || valor < 1) {
+        showToast("Valor inválido (mínimo R$1,00)", "error");
+        return;
+    }
+    try {
+        const res = await fetch(`${API}/api/finance/gerar-pix`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ googleId: userProfile.googleId, valor })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            // Exibe modal com QR Code e código copia e cola
+            const modal = document.getElementById("modalDeposito");
+            const qrImg = document.getElementById("depositoQR");
+            const qrText = document.getElementById("depositoCodigo");
+            qrImg.src = `data:image/png;base64,${data.qr_code}`;
+            qrText.value = data.qr_text;
+            modal.style.display = "flex";
+        } else {
+            showToast(data.detail || "Erro ao gerar Pix", "error");
+        }
+    } catch (e) {
+        showToast("Erro de conexão", "error");
+    }
+}
+
+function fecharModalDeposito() {
+    document.getElementById("modalDeposito").style.display = "none";
+}
+
 // ============================================================
 // GOOGLE AUTH
 // ============================================================

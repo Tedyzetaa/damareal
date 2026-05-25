@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
+import mercadopago
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, File, UploadFile, Form, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
@@ -28,14 +29,16 @@ BASE_URL         = os.environ.get("BASE_URL", "http://localhost:6500")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 SUPABASE_URL     = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY     = os.environ.get("SUPABASE_ANON_KEY")
+MP_ACCESS_TOKEN  = os.environ.get("MP_ACCESS_TOKEN")
 
-if not SUPABASE_URL or not SUPABASE_KEY or not GOOGLE_CLIENT_ID:
+if not SUPABASE_URL or not SUPABASE_KEY or not GOOGLE_CLIENT_ID or not MP_ACCESS_TOKEN:
     raise RuntimeError(
-        "Variáveis obrigatórias ausentes: SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_CLIENT_ID. "
+        "Variáveis obrigatórias ausentes: SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_CLIENT_ID, MP_ACCESS_TOKEN. "
         "Configure-as no painel do Render ou no arquivo .env."
     )
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
 
 # ================================================================
 # BUCKET DE AVATARES
@@ -602,6 +605,74 @@ async def registrar_jogo(payload: RegistrarJogoPayload):
         "delta":      delta,
         "novo_saldo": round(saldo_atual + delta, 2)
     }
+
+@app.post("/api/finance/gerar-pix")
+async def gerar_pix(payload: dict):
+    google_id = payload.get("googleId")
+    valor = float(payload.get("valor", 0))
+    if valor < 1:
+        raise HTTPException(status_code=400, detail="Valor mínimo R$ 1,00")
+    
+    payment_data = {
+        "transaction_amount": valor,
+        "description": f"Depósito Damas Real - {google_id}",
+        "payment_method_id": "pix",
+        "payer": {"email": "usuario@exemplo.com"},  # ideal vir do perfil
+    }
+    result = sdk.payment().create(payment_data)
+    if result["status"] != 201:
+        raise HTTPException(status_code=500, detail="Erro ao criar Pix")
+    
+    payment_id = result["response"]["id"]
+    qr_code = result["response"]["point_of_interaction"]["transaction_data"]["qr_code_base64"]
+    qr_text = result["response"]["point_of_interaction"]["transaction_data"]["qr_code"]
+    
+    supabase.table("transacoes").insert({
+        "google_id": google_id,
+        "valor": valor,
+        "payment_id": str(payment_id),
+        "status": "pendente"
+    }).execute()
+    
+    return {"qr_code": qr_code, "qr_text": qr_text, "payment_id": payment_id}
+
+@app.post("/api/finance/webhook")
+async def webhook_mp(request: Request):
+    data = await request.json()
+    if data.get("type") == "payment":
+        payment_id = data["data"]["id"]
+        # Busca transação
+        resp = supabase.table("transacoes").select("*").eq("payment_id", str(payment_id)).execute()
+        if not resp.data:
+            return {"status": "ignored"}
+        transacao = resp.data[0]
+        if transacao.get("status") == "aprovado" or transacao.get("saldo_atualizado"):
+            return {"status": "already_processed"}
+        
+        # Consulta MP
+        payment = sdk.payment().get(payment_id)
+        if payment["status"] == 200 and payment["response"]["status"] == "approved":
+            valor = float(payment["response"]["transaction_amount"])
+            # Atualiza transacao
+            supabase.table("transacoes").update({
+                "status": "aprovado",
+                "updated_at": datetime.utcnow().isoformat()
+            }).eq("payment_id", str(payment_id)).execute()
+            
+            # Atualiza saldo (atômico via verificação de duplicidade)
+            # Primeiro, marca transação como creditada para evitar race conditions
+            update_res = supabase.table("transacoes").update({
+                "saldo_atualizado": True
+            }).eq("payment_id", str(payment_id)).eq("saldo_atualizado", False).execute()
+            
+            if update_res.data:
+                # Incrementa saldo no perfil
+                user = supabase.table("perfis").select("saldo").eq("google_id", transacao["google_id"]).execute()
+                if user.data:
+                    saldo_atual = user.data[0]["saldo"] or 0.0
+                    novo_saldo = saldo_atual + valor
+                    supabase.table("perfis").update({"saldo": novo_saldo}).eq("google_id", transacao["google_id"]).execute()
+    return {"status": "ok"}
 
 # ================================================================
 # AUXILIARES DE MATCHMAKING VIA SUPABASE
