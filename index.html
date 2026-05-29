@@ -361,6 +361,34 @@
     </div>
 </div>
 
+<!-- ===== NOVO MODAL DE COMPARTILHAMENTO ===== -->
+<div id="modalCompartilhar" class="modal-overlay" style="display: none;">
+    <div class="modal-box">
+        <div class="modal-trophy">🔗</div>
+        <div class="modal-title">Convite um Amigo</div>
+        <div class="modal-subtitle">Compartilhe o link para uma partida privada</div>
+
+        <!-- Botões das redes sociais -->
+        <div class="share-buttons">
+            <button class="share-btn whatsapp" data-share="whatsapp">📱 WhatsApp</button>
+            <button class="share-btn facebook" data-share="facebook">📘 Facebook</button>
+            <button class="share-btn telegram" data-share="telegram">✈️ Telegram</button>
+            <button class="share-btn twitter" data-share="twitter">🐦 Twitter</button>
+        </div>
+
+        <!-- Área do link + botão copiar -->
+        <div class="link-container">
+            <input type="text" id="inviteLinkInput" class="config-input" readonly value="">
+            <button id="copyLinkBtn" class="copy-btn" title="Copiar link">📋</button>
+        </div>
+
+        <div class="modal-actions">
+            <button class="btn-modal-secondary" id="cancelarCompartilharBtn">Cancelar</button>
+            <button class="btn-modal-primary" id="iniciarPartidaBtn">Iniciar Partida</button>
+        </div>
+    </div>
+</div>
+
 <script src="config.js"></script>
 <script src="script.js"></script>
 </body>

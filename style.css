@@ -1621,3 +1621,75 @@ body::before {
 .ranking-nome   { font-size: 14px; font-weight: 600; color: var(--text-primary); }
 .ranking-patente{ font-size: 11px; color: var(--text-secondary); }
 .ranking-pontos { font-size: 13px; font-weight: 700; color: var(--gold-mid); white-space: nowrap; }
+
+/* ========================
+   MODAL DE COMPARTILHAMENTO
+======================== */
+.share-buttons {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    margin: 20px 0 16px;
+    flex-wrap: wrap;
+}
+
+.share-btn {
+    background: var(--bg-raised);
+    border: 1px solid rgba(200,150,60,0.3);
+    border-radius: 40px;
+    padding: 8px 16px;
+    font-family: 'Cinzel', serif;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.share-btn:hover {
+    transform: translateY(-2px);
+    border-color: var(--gold-mid);
+    background: var(--bg-card);
+}
+
+.share-btn.whatsapp:hover { background: #25d36620; border-color: #25d366; }
+.share-btn.facebook:hover { background: #1877f220; border-color: #1877f2; }
+.share-btn.telegram:hover  { background: #0088cc20; border-color: #0088cc; }
+.share-btn.twitter:hover   { background: #1da1f220; border-color: #1da1f2; }
+
+.link-container {
+    display: flex;
+    gap: 8px;
+    margin: 12px 0 24px;
+    align-items: center;
+}
+
+.link-container .config-input {
+    flex: 1;
+    font-size: 12px;
+    padding: 10px 12px;
+}
+
+.copy-btn {
+    background: var(--bg-raised);
+    border: 1px solid var(--gold-dim);
+    border-radius: var(--radius-md);
+    width: 44px;
+    height: 44px;
+    cursor: pointer;
+    font-size: 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    color: var(--gold-bright);
+}
+
+.copy-btn:hover {
+    background: var(--gold-dim);
+    color: var(--bg-void);
+    transform: scale(1.02);
+}

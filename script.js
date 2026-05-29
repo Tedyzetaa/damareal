@@ -14,6 +14,9 @@ let partidaRegistrada = false;
 let minhaCorAtual   = 'w';
 let opponentPicture = ""; // foto do adversário atual
 
+let pendingPrivateGameId = null;
+let pendingPrivateUrl    = null;
+
 let userSaldo = 0;            // saldo em reais (apenas para depósitos PIX)
 let userMoedas = 0;           // moedas para apostas e recompensas
 let saldoInterval = null;     // polling para atualização automática
@@ -606,20 +609,108 @@ function gerarLinkSalaPrivada() {
     const gameId = 'priv_' + Math.random().toString(36).substring(2, 10);
     const inviteUrl = `${window.location.origin}${window.location.pathname}?invite=${gameId}`;
     
-    // Copia para área de transferência
-    navigator.clipboard.writeText(inviteUrl).then(() => {
-        showToast("Link copiado com sucesso! Compartilhe com seu amigo.", "success", 4000);
-    }).catch(() => {
-        showToast("Não foi possível copiar o link. Copie manualmente: " + inviteUrl, "info", 6000);
-    });
+    // Armazena para uso posterior
+    pendingPrivateGameId = gameId;
+    pendingPrivateUrl    = inviteUrl;
+    
+    // Abre o modal de compartilhamento
+    abrirModalCompartilhar(inviteUrl);
+}
 
-    // Inicia a partida como criador (brancas)
-    iniciarPartidaPrivada(gameId);
+function abrirModalCompartilhar(url) {
+    const modal = document.getElementById('modalCompartilhar');
+    if (!modal) return;
+    
+    // Preenche o campo de link
+    const input = document.getElementById('inviteLinkInput');
+    if (input) input.value = url;
+    
+    // Exibe o modal
+    modal.style.display = 'flex';
+}
+
+function fecharModalCompartilhar(iniciarPartida = false) {
+    const modal = document.getElementById('modalCompartilhar');
+    if (modal) modal.style.display = 'none';
+    
+    if (iniciarPartida && pendingPrivateGameId) {
+        // Inicia a partida privada (aguardando amigo)
+        iniciarPartidaPrivada(pendingPrivateGameId);
+    }
+    
+    // Limpa os dados pendentes (opcional)
+    if (!iniciarPartida) {
+        pendingPrivateGameId = null;
+        pendingPrivateUrl    = null;
+    }
 }
 
 function iniciarPartidaPrivada(gameId) {
     modoAtual = 'private_wait';
     conectarPartidaOnline(gameId, 'w');
+}
+
+// ============================================================
+// CONFIGURAÇÃO DOS EVENTOS DO MODAL
+// ============================================================
+function inicializarModalCompartilhar() {
+    const modal = document.getElementById('modalCompartilhar');
+    if (!modal) return;
+    
+    // Botão copiar
+    const copyBtn = document.getElementById('copyLinkBtn');
+    if (copyBtn) {
+        copyBtn.onclick = () => {
+            const input = document.getElementById('inviteLinkInput');
+            if (input && input.value) {
+                navigator.clipboard.writeText(input.value).then(() => {
+                    showToast("Link copiado com sucesso!", "success", 2000);
+                }).catch(() => {
+                    showToast("Não foi possível copiar o link.", "error");
+                });
+            }
+        };
+    }
+    
+    // Botões de redes sociais
+    const shareButtons = modal.querySelectorAll('.share-btn');
+    shareButtons.forEach(btn => {
+        btn.onclick = () => {
+            const link = document.getElementById('inviteLinkInput').value;
+            if (!link) return;
+            const platform = btn.getAttribute('data-share');
+            let shareUrl = '';
+            const text = encodeURIComponent('Jogue Damas comigo! Link: ');
+            switch(platform) {
+                case 'whatsapp':
+                    shareUrl = `https://api.whatsapp.com/send?text=${text}${encodeURIComponent(link)}`;
+                    break;
+                case 'facebook':
+                    shareUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(link)}`;
+                    break;
+                case 'telegram':
+                    shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent('Jogue Damas comigo!')}`;
+                    break;
+                case 'twitter':
+                    shareUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent('Jogue Damas comigo! ' + link)}`;
+                    break;
+                default: return;
+            }
+            window.open(shareUrl, '_blank', 'noopener,noreferrer');
+        };
+    });
+    
+    // Botão Cancelar
+    const cancelarBtn = document.getElementById('cancelarCompartilharBtn');
+    if (cancelarBtn) {
+        cancelarBtn.onclick = () => fecharModalCompartilhar(false);
+    }
+    
+    // Botão Iniciar Partida
+    const iniciarBtn = document.getElementById('iniciarPartidaBtn');
+    if (iniciarBtn) {
+        iniciarBtn.onclick = () => fecharModalCompartilhar(true);
+    }
 }
 
 // ============================================================
@@ -1498,6 +1589,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnPrivate) {
         btnPrivate.onclick = gerarLinkSalaPrivada;
     }
+
+    // Inicializa o modal de compartilhamento
+    inicializarModalCompartilhar();
 });
 
 async function verificarLoginPersistente() {
