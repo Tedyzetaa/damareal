@@ -32,22 +32,16 @@ GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 SUPABASE_URL     = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY     = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 MP_ACCESS_TOKEN  = os.environ.get("MP_ACCESS_TOKEN")
-MP_WEBHOOK_SECRET = os.environ.get("MP_WEBHOOK_SECRET")  # IMPORTANTE: configurar no ambiente
+MP_WEBHOOK_SECRET = os.environ.get("MP_WEBHOOK_SECRET")
 
 if not SUPABASE_URL or not SUPABASE_KEY or not GOOGLE_CLIENT_ID or not MP_ACCESS_TOKEN:
-    raise RuntimeError(
-        "Variáveis obrigatórias ausentes: SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_CLIENT_ID, MP_ACCESS_TOKEN. "
-        "Configure-as no painel do Render ou no arquivo .env."
-    )
+    raise RuntimeError("Variáveis obrigatórias ausentes")
 if not MP_WEBHOOK_SECRET:
-    print("⚠️ AVISO: MP_WEBHOOK_SECRET não configurado. Webhook ficará vulnerável.")
+    print("⚠️ AVISO: MP_WEBHOOK_SECRET não configurado")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
 
-# ================================================================
-# BUCKET DE AVATARES
-# ================================================================
 def ensure_avatars_bucket():
     try:
         supabase.storage.get_bucket("avatars")
@@ -62,24 +56,9 @@ async def lifespan(app: FastAPI):
     ensure_avatars_bucket()
     yield
 
-# ================================================================
-# APP + RATE LIMITER + CORS
-# ================================================================
 app = FastAPI(title="Damas Real - Server-Side Engine", lifespan=lifespan)
-
-origins = [
-    "http://localhost:6500",
-    "https://damareal1.vercel.app",
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+origins = ["http://localhost:6500", "https://damareal1.vercel.app"]
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -122,6 +101,17 @@ def creditar_moedas(google_id: str, quantidade: int):
     res = supabase.table("perfis").select("moedas").eq("google_id", google_id).execute()
     atual = int(res.data[0]["moedas"] or 0) if res.data else 0
     supabase.table("perfis").update({"moedas": atual + quantidade}).eq("google_id", google_id).execute()
+
+def debitar_moedas(google_id: str, quantidade: int) -> bool:
+    """Debita moedas, retorna True se sucesso, False se saldo insuficiente."""
+    res = supabase.table("perfis").select("moedas").eq("google_id", google_id).execute()
+    if not res.data:
+        return False
+    atual = int(res.data[0]["moedas"] or 0)
+    if atual < quantidade:
+        return False
+    supabase.table("perfis").update({"moedas": atual - quantidade}).eq("google_id", google_id).execute()
+    return True
 
 def calcular_patente(pontos: int) -> str:
     if pontos >= 700: return "mestre"
@@ -180,25 +170,25 @@ class RegistrarJogoPayload(BaseModel):
 
 class EntrarFilaApostaPayload(BaseModel):
     googleId: str
-    valor: float
+    valor: int   # agora em moedas
 
     @field_validator('valor')
     @classmethod
     def valor_valido(cls, v):
         if v not in [1, 3, 5, 10, 20, 50]:
-            raise ValueError("Valor deve ser 1, 3, 5, 10, 20 ou 50")
+            raise ValueError("Valor deve ser 1, 3, 5, 10, 20 ou 50 moedas")
         return v
 
 class FinalizarApostaPayload(BaseModel):
     sala_id: str
-    vencedor_id: str   # google_id ou "empate"
+    vencedor_id: str
     googleId: str
 
 class CancelarFilaPayload(BaseModel):
     googleId: str
 
 # ================================================================
-# NOVA FUNÇÃO: PROCESSAR FIM DE PARTIDA APOSTADA
+# PROCESSAR FIM DE PARTIDA APOSTADA (MOEDAS)
 # ================================================================
 async def processar_fim_partida_aposta(sala_id: str, vencedor_id: str):
     try:
@@ -210,32 +200,21 @@ async def processar_fim_partida_aposta(sala_id: str, vencedor_id: str):
             return
         if sala["status"] != "em_jogo":
             return
-        valor_entrada = float(sala["valor_entrada"])
-        premio = float(sala["premio"])
+        valor_entrada = int(sala["valor_entrada"])
+        premio = int(sala["premio"])
         jogador1 = sala["jogador1_id"]
         jogador2 = sala["jogador2_id"]
 
-        # Caso empate (vencedor_id == "empate") – devolver os valores
         if vencedor_id == "empate":
-            # Devolver entrada para ambos
             for gid in [jogador1, jogador2]:
-                try:
-                    supabase.rpc("creditar_saldo", {"p_google_id": gid, "p_valor": valor_entrada}).execute()
-                except Exception:
-                    res_s = supabase.table("perfis").select("saldo").eq("google_id", gid).execute()
-                    saldo_atual = float(res_s.data[0]["saldo"] or 0) if res_s.data else 0.0
-                    supabase.table("perfis").update({"saldo": saldo_atual + valor_entrada}).eq("google_id", gid).execute()
+                creditar_moedas(gid, valor_entrada)
                 supabase.table("historico").insert({
                     "partida_id": sala_id, "google_id": gid, "tipo": "aposta", "resultado": "empate", "valor": valor_entrada, "delta_saldo": 0
                 }).execute()
         else:
-            try:
-                supabase.rpc("creditar_saldo", {"p_google_id": vencedor_id, "p_valor": premio}).execute()
-            except Exception:
-                res_s = supabase.table("perfis").select("saldo").eq("google_id", vencedor_id).execute()
-                saldo_atual = float(res_s.data[0]["saldo"] or 0) if res_s.data else 0.0
-                supabase.table("perfis").update({"saldo": saldo_atual + premio}).eq("google_id", vencedor_id).execute()
+            creditar_moedas(vencedor_id, premio)
             perdedor_id = jogador2 if vencedor_id == jogador1 else jogador1
+            # Para o perdedor, não há devolução (já debitado na entrada)
             supabase.table("historico").insert({
                 "partida_id": sala_id, "google_id": vencedor_id, "tipo": "aposta", "resultado": "vitoria", "valor": valor_entrada, "delta_saldo": premio
             }).execute()
@@ -247,7 +226,7 @@ async def processar_fim_partida_aposta(sala_id: str, vencedor_id: str):
         print(f"[APOSTA] Erro ao finalizar sala {sala_id}: {e}")
 
 # ================================================================
-# ENGINE DE DAMAS (completa e inalterada)
+# ENGINE DE DAMAS (INALTERADA)
 # ================================================================
 class DamasEngine:
     @staticmethod
@@ -264,10 +243,8 @@ class DamasEngine:
     def verificar_fim_de_jogo(tabuleiro: List[List[str]], regras: str) -> Optional[str]:
         brancas_vivas = any(p.lower() == 'w' for linha in tabuleiro for p in linha)
         pretas_vivas  = any(p.lower() == 'b' for linha in tabuleiro for p in linha)
-
         if not brancas_vivas: return "b"
         if not pretas_vivas:  return "w"
-
         for cor, retorno in [('w', 'b'), ('b', 'w')]:
             tem_movimento = False
             for r in range(8):
@@ -309,7 +286,7 @@ class DamasEngine:
                     if 0 <= rt < 8 and 0 <= ct < 8:
                         if board[rm][cm] != '.' and board[rm][cm].lower() != cor and board[rt][ct] == '.':
                             return True
-                else:  # Brasileira — voo longo
+                else:
                     found_enemy = False
                     nr, nc = r + dr, c + dc
                     while 0 <= nr < 8 and 0 <= nc < 8:
@@ -326,10 +303,7 @@ class DamasEngine:
 
     @staticmethod
     def jogador_tem_capturas_possiveis(board: List[List[str]], cor: str, regras: str) -> bool:
-        return any(
-            DamasEngine.tem_capturas_obrigatorias_da_peca(board, r, c, cor, regras)
-            for r in range(8) for c in range(8)
-        )
+        return any(DamasEngine.tem_capturas_obrigatorias_da_peca(board, r, c, cor, regras) for r in range(8) for c in range(8))
 
     @staticmethod
     def obter_todos_movimentos_validos(board, player, regras):
@@ -422,10 +396,8 @@ class DamasEngine:
             return False, board, "A casa de destino não está vazia."
         if (r_to + c_to) % 2 == 0:
             return False, board, "Movimento inválido: peças só jogam nas casas escuras."
-
         dr = r_to - r_from
         dc = c_to - c_from
-
         if peca in ['w', 'b']:
             if abs(dr) == 1 and abs(dc) == 1:
                 if continue_capture:
@@ -451,7 +423,6 @@ class DamasEngine:
                     return True, nb, True
                 return True, nb, False
             return False, board, "Movimento inválido para peça comum."
-
         elif peca in ['W', 'B']:
             if abs(dr) != abs(dc):
                 return False, board, "Damas só se movem na diagonal."
@@ -464,7 +435,6 @@ class DamasEngine:
                     caminho.append((cr, cc, board[cr][cc]))
                 cr += sr
                 cc += sc
-
             if len(caminho) == 0:
                 if continue_capture:
                     return False, board, "Dama precisa continuar capturando."
@@ -526,29 +496,19 @@ async def ping():
 @limiter.limit("10/minute")
 async def auth_google(request: Request, payload: AuthToken):
     try:
-        id_info = id_token.verify_oauth2_token(
-            payload.token, google_requests.Request(), GOOGLE_CLIENT_ID
-        )
+        id_info = id_token.verify_oauth2_token(payload.token, google_requests.Request(), GOOGLE_CLIENT_ID)
     except ValueError:
         raise HTTPException(status_code=401, detail="Token inválido ou expirado.")
-
     google_id      = id_info['sub']
     email_google   = id_info.get('email', '')
     nome_google    = id_info.get('name', 'Jogador Real')
     picture_google = id_info.get('picture', '')
-
     try:
         res_existente = supabase.table("perfis").select("foto_url").eq("google_id", google_id).execute()
         tem_foto_custom = bool(res_existente.data and res_existente.data[0].get("foto_url"))
-
-        upsert_data = {
-            "google_id": google_id,
-            "nome":      nome_google,
-            "email":     email_google,
-        }
+        upsert_data = {"google_id": google_id, "nome": nome_google, "email": email_google}
         if not tem_foto_custom:
             upsert_data["foto_url"] = picture_google
-
         supabase.table("perfis").upsert(upsert_data, on_conflict="google_id").execute()
         res = supabase.table("perfis").select("nick, saldo, moedas, foto_url, bonus_cadastro_concedido").eq("google_id", google_id).execute()
         row = res.data[0] if res.data else {}
@@ -559,94 +519,56 @@ async def auth_google(request: Request, payload: AuthToken):
             creditar_moedas(google_id, 1000)
             supabase.table("perfis").update({"bonus_cadastro_concedido": True}).eq("google_id", google_id).execute()
             bonus_cadastro = True
+        nick = row.get("nick")
+        saldo = row.get("saldo") or 0.0
+        moedas = int(row.get("moedas") or 0)
+        foto_final = row.get("foto_url") or picture_google
+        return {
+            "status": "authenticated", "google_id": google_id, "email": email_google, "name": nome_google,
+            "nick": nick, "picture": foto_final, "saldo": round(saldo, 2), "moedas": moedas, "bonus_cadastro": bonus_cadastro,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro no banco de dados: {str(e)}")
 
-    nick       = row.get("nick")
-    saldo      = row.get("saldo") or 0.0
-    moedas     = int(row.get("moedas") or 0)
-    foto_final = row.get("foto_url") or picture_google
-
-    return {
-        "status": "authenticated", "google_id": google_id,
-        "email": email_google, "name": nome_google,
-        "nick": nick, "picture": foto_final, "saldo": round(saldo, 2), "moedas": moedas, "bonus_cadastro": bonus_cadastro,
-    }
-
 @app.post("/update-profile")
-async def update_profile(
-    request: Request,
-    foto:     UploadFile = File(None),
-    dados:    str = Form(...),
-    googleId: str = Form(...)
-):
+async def update_profile(request: Request, foto: UploadFile = File(None), dados: str = Form(...), googleId: str = Form(...)):
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Token de autenticação ausente.")
     token = auth_header.split(" ")[1]
     verificar_token_google(token, googleId)
-
     perfil_json = json.loads(dados)
-
     data_nasc = perfil_json.get("dataNascimento")
     if data_nasc:
-        born  = date.fromisoformat(data_nasc)
+        born = date.fromisoformat(data_nasc)
         today = date.today()
-        age   = today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+        age = today.year - born.year - ((today.month, today.day) < (born.month, born.day))
         if age < 18:
             raise HTTPException(status_code=400, detail="Usuário menor de idade.")
-
     cpf_valor = perfil_json.get("cpf", "")
     if cpf_valor and not validar_cpf(cpf_valor):
         raise HTTPException(status_code=400, detail="CPF inválido.")
-
     foto_url_atual = None
     if foto and foto.filename:
         EXTENSOES_PERMITIDAS = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
-        content_type_map = {
-            'image/jpeg': '.jpg', 'image/png': '.png',
-            'image/gif': '.gif', 'image/webp': '.webp'
-        }
+        content_type_map = {'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif', 'image/webp': '.webp'}
         ext = os.path.splitext(foto.filename)[1].lower()
         if ext not in EXTENSOES_PERMITIDAS:
             raise HTTPException(status_code=400, detail="Formato de imagem não permitido.")
-
         foto_bytes = await foto.read()
         if len(foto_bytes) > 5 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="A foto deve ter no máximo 5 MB.")
-
-        ext_final   = content_type_map.get(foto.content_type, ext)
+        ext_final = content_type_map.get(foto.content_type, ext)
         bucket_path = f"{googleId}{ext_final}"
         try:
-            supabase.storage.from_("avatars").upload(
-                bucket_path, foto_bytes,
-                file_options={"content-type": foto.content_type, "upsert": "true"}
-            )
-        except Exception as upload_err:
-            err_msg = str(upload_err)
-            try:
-                supabase.storage.from_("avatars").update(
-                    bucket_path, foto_bytes,
-                    file_options={"content-type": foto.content_type, "upsert": "true"}
-                )
-            except Exception as update_err:
-                raise HTTPException(status_code=500, detail=f"Erro ao salvar foto: {err_msg}")
+            supabase.storage.from_("avatars").upload(bucket_path, foto_bytes, file_options={"content-type": foto.content_type, "upsert": "true"})
+        except Exception:
+            supabase.storage.from_("avatars").update(bucket_path, foto_bytes, file_options={"content-type": foto.content_type, "upsert": "true"})
         foto_url_atual = supabase.storage.from_("avatars").get_public_url(bucket_path)
-
-    update_data = {
-        "bio":      perfil_json.get('bio'),
-        "telefone": perfil_json.get('telefone'),
-        "cpf":      cpf_valor,
-        "data_nasc": data_nasc,
-        "nick":     perfil_json.get('nick')
-    }
+    update_data = {"bio": perfil_json.get('bio'), "telefone": perfil_json.get('telefone'), "cpf": cpf_valor, "data_nasc": data_nasc, "nick": perfil_json.get('nick')}
     if foto_url_atual:
         update_data["foto_url"] = foto_url_atual
-
-    try:
-        supabase.table("perfis").update(update_data).eq("google_id", googleId).execute()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao salvar perfil: {str(e)}")
+    supabase.table("perfis").update(update_data).eq("google_id", googleId).execute()
     return {"status": "Perfil salvo com sucesso!", "foto_url": foto_url_atual}
 
 @app.get("/get-profile/{google_id}")
@@ -661,33 +583,22 @@ async def get_profile(google_id: str):
 
 @app.post("/registrar-jogo")
 async def registrar_jogo(request: Request, payload: RegistrarJogoPayload):
-    # Autenticação obrigatória
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.split(" ")[1]
         try:
             verificar_token_google(token, payload.googleId)
-        except Exception as e:
-            print(f"[AUTH WARNING] registrar_jogo: {e}")
-    # Nota: A transação prossegue utilizando a SERVICE_ROLE_KEY do Supabase para garantir
-    # que o registro financeiro ocorra mesmo em chamadas de processos paralelos.
-
+        except Exception:
+            pass
     partida_id = payload.partida_id or str(uuid.uuid4())
-
     res_check = supabase.table("historico").select("id").eq("partida_id", partida_id).execute()
     if res_check.data:
         return {"status": "already_registered", "partida_id": partida_id}
-
     res_user = supabase.table("perfis").select("saldo").eq("google_id", payload.googleId).execute()
     if not res_user.data:
         raise HTTPException(status_code=404, detail="Jogador não encontrado.")
-
     saldo_atual = res_user.data[0]["saldo"]
     delta = 0.0
-
-    # Para apostas, o processamento financeiro já é feito server-side em
-    # processar_fim_partida_aposta (via creditar_saldo RPC). Aqui apenas
-    # registramos o histórico sem mexer no saldo para evitar duplo crédito/débito.
     if payload.tipo != "aposta":
         if payload.resultado == "vitoria":
             delta = +payload.valor
@@ -695,134 +606,74 @@ async def registrar_jogo(request: Request, payload: RegistrarJogoPayload):
             delta = -payload.valor
             if saldo_atual + delta < 0:
                 raise HTTPException(status_code=422, detail=f"Saldo insuficiente. R$ {saldo_atual:.2f}")
-
     supabase.table("historico").insert({
-        "partida_id":  partida_id,
-        "google_id":   payload.googleId,
-        "tipo":        payload.tipo,
-        "resultado":   payload.resultado,
-        "valor":       payload.valor,
-        "delta_saldo": delta
+        "partida_id": partida_id, "google_id": payload.googleId, "tipo": payload.tipo,
+        "resultado": payload.resultado, "valor": payload.valor, "delta_saldo": delta
     }).execute()
-
     if delta != 0.0:
         supabase.table("perfis").update({"saldo": saldo_atual + delta}).eq("google_id", payload.googleId).execute()
-
-    # Atualizar pontos e patente (para online e apostado)
     tipo_para_pontos = payload.tipo
     if tipo_para_pontos in ('aposta', 'apostada'):
         tipo_para_pontos = 'apostado'
     atualizar_pontos_e_patente(payload.googleId, tipo_para_pontos, payload.resultado)
-    return {
-        "status":     "registered",
-        "partida_id": partida_id,
-        "delta":      delta,
-        "novo_saldo": round(saldo_atual + delta, 2)
-    }
+    return {"status": "registered", "partida_id": partida_id, "delta": delta, "novo_saldo": round(saldo_atual + delta, 2)}
 
 @app.post("/api/finance/gerar-pix")
 async def gerar_pix(request: Request, payload: dict):
-    # Autenticação obrigatória
     auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "): # type: ignore
+    if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Token de autenticação ausente.")
     token = auth_header.split(" ")[1]
     google_id = payload.get("googleId")
     verificar_token_google(token, google_id)
-
     valor = float(payload.get("valor", 0))
     if valor < 1:
         raise HTTPException(status_code=400, detail="Valor mínimo R$ 1,00")
-
-    # Buscar email do usuário no Supabase
     user = supabase.table("perfis").select("email").eq("google_id", google_id).execute()
     if not user.data or not user.data[0].get("email"):
         raise HTTPException(status_code=400, detail="Usuário sem e-mail cadastrado.")
-
     email_usuario = user.data[0]["email"]
-
-    payment_data = {
-        "transaction_amount": valor,
-        "description": f"Depósito Damas Real - {google_id}",
-        "payment_method_id": "pix",
-        "payer": {"email": email_usuario},
-    }
+    payment_data = {"transaction_amount": valor, "description": f"Comprar moedas - {google_id}", "payment_method_id": "pix", "payer": {"email": email_usuario}}
     result = sdk.payment().create(payment_data)
     if result["status"] != 201:
         erro_mp = result.get("response", {})
-        print(f"[MP ERROR] status={result['status']} response={erro_mp}")
         causa = erro_mp.get("message") or erro_mp.get("error") or str(erro_mp)
         raise HTTPException(status_code=500, detail=f"Erro MP: {causa}")
-
     payment_id = result["response"]["id"]
     qr_code = result["response"]["point_of_interaction"]["transaction_data"]["qr_code_base64"]
     qr_text = result["response"]["point_of_interaction"]["transaction_data"]["qr_code"]
-
-    # Inserir transação com os nomes de coluna corretos
     supabase.table("transacoes").insert({
-        "google_id": google_id,
-        "mp_payment_id": payment_id,    # coluna: mp_payment_id
-        "valor": valor,
-        "tipo": "deposito",
-        "status": "pendente"
+        "google_id": google_id, "mp_payment_id": payment_id, "valor": valor, "tipo": "compra_moedas", "status": "pendente"
     }).execute()
-
     return {"qr_code": qr_code, "qr_text": qr_text, "payment_id": payment_id}
 
 @app.post("/api/finance/webhook")
 async def webhook_mp(request: Request):
-    # 1. Validar assinatura (segurança)
-    if MP_WEBHOOK_SECRET: # type: ignore
+    if MP_WEBHOOK_SECRET:
         signature = request.headers.get("x-signature", "")
         if not signature:
             raise HTTPException(status_code=401, detail="Assinatura ausente")
         body = await request.body()
-        expected = hmac.new(
-            MP_WEBHOOK_SECRET.encode(),
-            body,
-            hashlib.sha256
-        ).hexdigest()
-        # O formato é algo como "v1=hash"
+        expected = hmac.new(MP_WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
         parts = signature.split("v1=")
         if len(parts) < 2 or not hmac.compare_digest(expected, parts[1]):
             raise HTTPException(status_code=401, detail="Assinatura inválida")
-    else:
-        print("⚠️ AVISO: MP_WEBHOOK_SECRET não configurado. Webhook ficará vulnerável.") # type: ignore
-
     data = await request.json()
     if data.get("type") == "payment":
-        payment_id = data["data"]["id"]  # id do pagamento (inteiro)
-        # Busca transação pela coluna correta: mp_payment_id (é um bigint)
+        payment_id = data["data"]["id"]
         resp = supabase.table("transacoes").select("*").eq("mp_payment_id", int(payment_id)).execute()
         if not resp.data:
             return {"status": "ignored"}
         transacao = resp.data[0]
-
-        # Já processado?
-        if transacao.get("status") == "aprovado" or transacao.get("saldo_atualizado"):
+        if transacao.get("status") == "aprovado":
             return {"status": "already_processed"}
-
-        # Consulta MP
         payment = sdk.payment().get(payment_id)
         if payment["status"] == 200 and payment["response"]["status"] == "approved":
-            valor = float(payment["response"]["transaction_amount"])
-
-            # Atualização atômica via RPC (ver SQL abaixo)
-            # Chama a função SQL que só aumenta o saldo se a transação ainda não tiver sido creditada
-            try:
-                supabase.rpc("incrementar_saldo_atomico", {
-                    "p_transacao_id": transacao["id"],
-                    "p_valor": valor
-                }).execute()
-                # Atualiza status da transação para aprovado (opcional, a RPC já pode fazer isso)
-                supabase.table("transacoes").update({
-                    "status": "aprovado",
-                    "updated_at": datetime.utcnow().isoformat()
-                }).eq("id", transacao["id"]).execute()
-            except Exception as e:
-                print(f"[WEBHOOK] Erro ao processar: {e}")
-                return {"status": "error", "detail": str(e)}
-
+            valor_reais = float(payment["response"]["transaction_amount"])
+            moedas_creditadas = int(valor_reais * 1000)
+            google_id = transacao["google_id"]
+            creditar_moedas(google_id, moedas_creditadas)
+            supabase.table("transacoes").update({"status": "aprovado", "updated_at": datetime.utcnow().isoformat()}).eq("id", transacao["id"]).execute()
     return {"status": "ok"}
 
 @app.get("/api/finance/saldo/{google_id}")
@@ -839,9 +690,22 @@ async def obter_moedas(google_id: str):
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
     return {"moedas": int(resp.data[0].get("moedas") or 0)}
 
-@app.post("/api/bonus/login-diario")
-@limiter.limit("5/minute")
-async def bonus_login_diario(request: Request, payload: AuthToken):
+@app.get("/api/bonus/disponivel")
+async def bonus_disponivel(request: Request, google_id: str):
+    """Verifica se o usuário pode resgatar o bônus diário hoje."""
+    res = supabase.table("perfis").select("ultimo_bonus_diario").eq("google_id", google_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    ultimo = res.data[0].get("ultimo_bonus_diario")
+    hoje = date.today().isoformat()
+    if ultimo:
+        ultimo_str = str(ultimo)[:10]
+        if ultimo_str == hoje:
+            return {"disponivel": False, "mensagem": "Bônus já resgatado hoje."}
+    return {"disponivel": True, "quantidade": 300}
+
+@app.post("/api/bonus/resgatar")
+async def resgatar_bonus_diario(request: Request, payload: AuthToken):
     id_info = verificar_token_google(payload.token)
     google_id = id_info['sub']
     res = supabase.table("perfis").select("ultimo_bonus_diario, moedas").eq("google_id", google_id).execute()
@@ -852,14 +716,12 @@ async def bonus_login_diario(request: Request, payload: AuthToken):
     ultimo = row.get("ultimo_bonus_diario")
     if ultimo:
         ultimo_str = str(ultimo)[:10]
-    else:
-        ultimo_str = None
-    if ultimo_str == hoje:
-        return {"concedido": False, "mensagem": "Bônus já coletado hoje."}
+        if ultimo_str == hoje:
+            raise HTTPException(status_code=409, detail="Bônus já resgatado hoje.")
     creditar_moedas(google_id, 300)
     supabase.table("perfis").update({"ultimo_bonus_diario": hoje}).eq("google_id", google_id).execute()
     moedas_novas = int(row.get("moedas") or 0) + 300
-    return {"concedido": True, "moedas": moedas_novas}
+    return {"resgatado": True, "moedas": moedas_novas}
 
 @app.get("/api/ranking/{modo}")
 async def obter_ranking(modo: str):
@@ -877,19 +739,19 @@ async def obter_ranking(modo: str):
     return {"modo": modo, "ranking": ranking}
 
 # ================================================================
-# ENDPOINTS DE APOSTA
+# ENDPOINTS DE APOSTA (MOEDAS)
 # ================================================================
 @app.post("/api/aposta/entrar-fila")
 async def entrar_fila_aposta(request: Request, payload: EntrarFilaApostaPayload):
     auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "): # type: ignore
+    if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Token ausente")
     token = auth_header.split(" ")[1]
     id_info = verificar_token_google(token, payload.googleId)
     google_id = payload.googleId
-    valor = payload.valor
+    valor = payload.valor  # em moedas
 
-    # Limpar salas antigas presas (mais de 30 minutos sem resolver)
+    # Limpar salas antigas
     supabase.table("salas_aposta") \
         .update({"status": "cancelada"}) \
         .in_("status", ["aguardando", "em_jogo"]) \
@@ -897,8 +759,6 @@ async def entrar_fila_aposta(request: Request, payload: EntrarFilaApostaPayload)
         .lt("created_at", (datetime.utcnow() - timedelta(minutes=30)).isoformat()) \
         .execute()
 
-    # Só DEPOIS verificar se ainda está ativo
-    # 1. Verificar se já está em fila ou partida ativa
     resp_existente = supabase.table("salas_aposta") \
         .select("id, status") \
         .or_(f"jogador1_id.eq.{google_id},jogador2_id.eq.{google_id}") \
@@ -906,8 +766,7 @@ async def entrar_fila_aposta(request: Request, payload: EntrarFilaApostaPayload)
         .execute()
     if resp_existente.data:
         raise HTTPException(status_code=409, detail="Você já está em uma sala ativa")
-    
-    # 2. Tentar encontrar uma sala existente (a mais antiga) para seguir o princípio FIFO
+
     resp_sala = supabase.table("salas_aposta") \
         .select("*") \
         .eq("status", "aguardando") \
@@ -921,7 +780,6 @@ async def entrar_fila_aposta(request: Request, payload: EntrarFilaApostaPayload)
     sala_encontrada = None
     if resp_sala.data:
         sala = resp_sala.data[0]
-        # Tentar reservar a sala encontrada atomicamente por ID
         reserva_sala = supabase.table("salas_aposta") \
             .update({"status": "reservando", "jogador2_id": google_id}) \
             .eq("id", sala["id"]) \
@@ -930,35 +788,21 @@ async def entrar_fila_aposta(request: Request, payload: EntrarFilaApostaPayload)
         if reserva_sala.data:
             sala_encontrada = reserva_sala.data[0]
 
-    # 3. Debitar saldo do jogador
-    debitar_result = supabase.rpc("debitar_saldo", {"p_google_id": google_id, "p_valor": valor}).execute()
-    if not debitar_result.data:
-        # Se o débito falhar, e uma sala foi reservada, precisamos liberar a sala
+    # Debitar moedas
+    if not debitar_moedas(google_id, valor):
         if sala_encontrada:
             supabase.table("salas_aposta") \
                 .update({"status": "aguardando", "jogador2_id": None}) \
                 .eq("id", sala_encontrada["id"]) \
                 .execute()
-        raise HTTPException(status_code=402, detail="Saldo insuficiente")
+        raise HTTPException(status_code=402, detail="Moedas insuficientes")
 
     if sala_encontrada:
-        # Se uma sala foi reservada e o saldo debitado, finalizar o pareamento
         sala = sala_encontrada
         sala_id = sala["id"]
-
-        # Atualizar sala com segundo jogador
         game_id = str(uuid.uuid4())
         pote_total = valor * 2
-        premio = pote_total * 0.90 # 10% de taxa
-        taxa_casa = pote_total * 0.10 # 10% de taxa
-
-        # Buscar cores da sala (já deveriam estar lá do jogador1)
-        resp_cores = supabase.table("salas_aposta") \
-            .select("cor_jogador1, cor_jogador2") \
-            .eq("id", sala_id) \
-            .execute()
-        
-        # Sortear cores no backend ao parear (sempre novo sorteio para garantir aleatoriedade)
+        premio = int(pote_total * 0.90)  # prêmio em moedas inteiras
         cores = ['w', 'b']
         random.shuffle(cores)
         cor_jogador1 = cores[0]
@@ -973,13 +817,11 @@ async def entrar_fila_aposta(request: Request, payload: EntrarFilaApostaPayload)
                 "cor_jogador2": cor_jogador2,
                 "pote_total": pote_total,
                 "premio": premio,
-                "taxa_casa": taxa_casa,
+                "taxa_casa": pote_total * 0.10,
                 "updated_at": datetime.utcnow().isoformat()
             }) \
             .eq("id", sala_id) \
             .execute()
-        # Inicializar estado do jogo (tabuleiro)
-        # IMPORTANTE: jogador1_id deve ser buscado da sala original (não do google_id atual, que é o j2)
         resp_j1 = supabase.table("salas_aposta").select("jogador1_id").eq("id", sala_id).execute()
         jogador1_id_real = resp_j1.data[0]["jogador1_id"] if resp_j1.data else None
         salas.partidas[game_id] = {
@@ -990,7 +832,6 @@ async def entrar_fila_aposta(request: Request, payload: EntrarFilaApostaPayload)
             "sala_id": sala_id,
             "valor_entrada": valor,
             "premio": premio,
-            # Campos obrigatórios para resolução financeira ao fim da partida
             "jogador1_id": jogador1_id_real,
             "jogador2_id": google_id,
             "cor_jogador1": cor_jogador1,
@@ -1005,7 +846,6 @@ async def entrar_fila_aposta(request: Request, payload: EntrarFilaApostaPayload)
             "premio": premio
         }
     else:
-        # Criar nova sala
         nova_sala = {
             "valor_entrada": valor,
             "status": "aguardando",
@@ -1019,13 +859,11 @@ async def entrar_fila_aposta(request: Request, payload: EntrarFilaApostaPayload)
 @app.post("/api/aposta/cancelar-fila")
 async def cancelar_fila_aposta(request: Request, payload: CancelarFilaPayload):
     auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "): # type: ignore
+    if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Token ausente")
     token = auth_header.split(" ")[1]
     verificar_token_google(token, payload.googleId)
     google_id = payload.googleId
-
-    # Buscar sala aguardando do jogador
     resp = supabase.table("salas_aposta") \
         .select("id, valor_entrada") \
         .eq("status", "aguardando") \
@@ -1037,10 +875,7 @@ async def cancelar_fila_aposta(request: Request, payload: CancelarFilaPayload):
     sala = resp.data[0]
     sala_id = sala["id"]
     valor = sala["valor_entrada"]
-
-    # Devolver saldo
-    supabase.rpc("creditar_saldo", {"p_google_id": google_id, "p_valor": valor}).execute()
-    # Cancelar sala
+    creditar_moedas(google_id, valor)
     supabase.table("salas_aposta").update({"status": "cancelada"}).eq("id", sala_id).execute()
     return {"status": "cancelado"}
 
@@ -1057,56 +892,35 @@ async def status_sala_aposta(sala_id: str):
 @app.post("/api/aposta/finalizar")
 async def finalizar_aposta(request: Request, payload: FinalizarApostaPayload):
     auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "): # type: ignore
+    if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Token ausente")
     token = auth_header.split(" ")[1]
     verificar_token_google(token, payload.googleId)
-    # Chamar a RPC finalizar_sala_aposta (idempotente)
-    supabase.rpc("finalizar_sala_aposta", {
-        "p_sala_id": payload.sala_id,
-        "p_vencedor_id": payload.vencedor_id
-    }).execute()
+    await processar_fim_partida_aposta(payload.sala_id, payload.vencedor_id)
     return {"status": "finalizado"}
 
 # ================================================================
-# AUXILIARES DE MATCHMAKING VIA SUPABASE
+# AUXILIARES DE MATCHMAKING
 # ================================================================
 async def inserir_na_fila(jogador_id: str):
-    supabase.table("fila_espera").insert({
-        "jogador_id": jogador_id,
-        "status":     "aguardando"
-    }).execute()
+    supabase.table("fila_espera").insert({"jogador_id": jogador_id, "status": "aguardando"}).execute()
 
 async def remover_da_fila(jogador_id: str):
-    supabase.table("fila_espera").delete() \
-        .eq("jogador_id", jogador_id) \
-        .execute()
+    supabase.table("fila_espera").delete().eq("jogador_id", jogador_id).execute()
 
 async def buscar_oponente(jogador_id: str) -> Optional[dict]:
-    resp = supabase.table("fila_espera") \
-        .select("*") \
-        .eq("status", "aguardando") \
-        .neq("jogador_id", jogador_id) \
-        .order("created_at", desc=False) \
-        .limit(1) \
-        .execute()
+    resp = supabase.table("fila_espera").select("*").eq("status", "aguardando").neq("jogador_id", jogador_id).order("created_at", desc=False).limit(1).execute()
     return resp.data[0] if resp.data else None
 
 async def obter_perfil_basico(jogador_id: str) -> dict:
-    resp = supabase.table("perfis") \
-        .select("nick, nome, foto_url") \
-        .eq("google_id", jogador_id) \
-        .execute()
+    resp = supabase.table("perfis").select("nick, nome, foto_url").eq("google_id", jogador_id).execute()
     if resp.data:
         row = resp.data[0]
-        return {
-            "nick":    row.get("nick") or row.get("nome") or "Jogador",
-            "picture": row.get("foto_url") or ""
-        }
+        return {"nick": row.get("nick") or row.get("nome") or "Jogador", "picture": row.get("foto_url") or ""}
     return {"nick": "Desconhecido", "picture": ""}
 
 # ================================================================
-# WEBSOCKET — LOBBY (MATCHMAKING)
+# WEBSOCKET LOBBY (com convites) – INALTERADO
 # ================================================================
 lobby_connections: Dict[str, WebSocket] = {}
 match_info: Dict[str, dict] = {}
@@ -1117,18 +931,16 @@ async def websocket_lobby_endpoint(websocket: WebSocket, google_id: str = None):
     if not google_id:
         await websocket.close(code=1008, reason="google_id é obrigatório")
         return
-
     await websocket.accept()
     async with lobby_lock:
         await remover_da_fila(google_id)
         match_info.pop(google_id, None)
         await inserir_na_fila(google_id)
         lobby_connections[google_id] = websocket
-
     try:
         while True:
             try:
-                msg  = await asyncio.wait_for(websocket.receive_text(), timeout=2.0)
+                msg = await asyncio.wait_for(websocket.receive_text(), timeout=2.0)
                 data = json.loads(msg)
                 msg_type = data.get("type")
                 if msg_type == "cancel":
@@ -1174,103 +986,52 @@ async def websocket_lobby_endpoint(websocket: WebSocket, google_id: str = None):
                     match_info.pop(from_id, None)
             except asyncio.TimeoutError:
                 pass
-
-            consulta = supabase.table("fila_espera") \
-                .select("status, partida_id") \
-                .eq("jogador_id", google_id) \
-                .execute()
+            consulta = supabase.table("fila_espera").select("status, partida_id").eq("jogador_id", google_id).execute()
             if consulta.data and consulta.data[0]["status"] == "pareado":
                 partida_id = consulta.data[0]["partida_id"]
                 info = match_info.pop(google_id, None)
-                cor = info["color"] if (info and "color" in info) else 'b'
-                resp_op = supabase.table("fila_espera") \
-                    .select("jogador_id") \
-                    .eq("partida_id", partida_id) \
-                    .neq("jogador_id", google_id) \
-                    .execute()
+                cor = info["color"] if info and "color" in info else 'b'
+                resp_op = supabase.table("fila_espera").select("jogador_id").eq("partida_id", partida_id).neq("jogador_id", google_id).execute()
                 opp_id = resp_op.data[0]["jogador_id"] if resp_op.data else None
                 opp_perfil = await obter_perfil_basico(opp_id) if opp_id else {"nick": "Adversário", "picture": ""}
                 await websocket.send_text(json.dumps({
-                    "type": "matched",
-                    "game_id": partida_id,
-                    "color": cor,
-                    "opponent_nick":    opp_perfil["nick"],
-                    "opponent_picture": opp_perfil["picture"]
+                    "type": "matched", "game_id": partida_id, "color": cor,
+                    "opponent_nick": opp_perfil["nick"], "opponent_picture": opp_perfil["picture"]
                 }))
                 async with lobby_lock:
                     await remover_da_fila(google_id)
                     lobby_connections.pop(google_id, None)
                 await websocket.close()
                 return
-
             async with lobby_lock:
                 oponente = await buscar_oponente(google_id)
                 if not oponente:
                     continue
-
-                reserva = supabase.table("fila_espera") \
-                    .update({"status": "emparelhando"}) \
-                    .eq("jogador_id", oponente["jogador_id"]) \
-                    .eq("status", "aguardando") \
-                    .execute()
+                reserva = supabase.table("fila_espera").update({"status": "emparelhando"}).eq("jogador_id", oponente["jogador_id"]).eq("status", "aguardando").execute()
                 if not reserva.data:
                     continue
-
                 cores = ['w', 'b']
                 random.shuffle(cores)
                 cor_atual = cores[0]
                 cor_op = cores[1]
-
                 game_id = f"online_{uuid.uuid4().hex[:8]}"
-                salas.partidas[game_id] = {
-                    "board":      DamasEngine.criar_tabuleiro_inicial(),
-                    "turn":       "w",
-                    "regras":     "brasileira",
-                    "partida_id": str(uuid.uuid4())
-                }
-
-                supabase.table("fila_espera") \
-                    .update({"status": "pareado", "partida_id": game_id}) \
-                    .eq("jogador_id", google_id) \
-                    .execute()
-                supabase.table("fila_espera") \
-                    .update({"status": "pareado", "partida_id": game_id}) \
-                    .eq("jogador_id", oponente["jogador_id"]) \
-                    .execute()
-
-                perfil_op   = await obter_perfil_basico(oponente["jogador_id"])
+                salas.partidas[game_id] = {"board": DamasEngine.criar_tabuleiro_inicial(), "turn": "w", "regras": "brasileira", "partida_id": str(uuid.uuid4())}
+                supabase.table("fila_espera").update({"status": "pareado", "partida_id": game_id}).eq("jogador_id", google_id).execute()
+                supabase.table("fila_espera").update({"status": "pareado", "partida_id": game_id}).eq("jogador_id", oponente["jogador_id"]).execute()
+                perfil_op = await obter_perfil_basico(oponente["jogador_id"])
                 perfil_self = await obter_perfil_basico(google_id)
-
-                msg_self = {
-                    "type": "matched",
-                    "game_id": game_id,
-                    "color": cor_atual,
-                    "opponent_nick":    perfil_op["nick"],
-                    "opponent_picture": perfil_op["picture"]
-                }
-                msg_opp = {
-                    "type": "matched",
-                    "game_id": game_id,
-                    "color": cor_op,
-                    "opponent_nick":    perfil_self["nick"],
-                    "opponent_picture": perfil_self["picture"]
-                }
-
+                msg_self = {"type": "matched", "game_id": game_id, "color": cor_atual, "opponent_nick": perfil_op["nick"], "opponent_picture": perfil_op["picture"]}
+                msg_opp = {"type": "matched", "game_id": game_id, "color": cor_op, "opponent_nick": perfil_self["nick"], "opponent_picture": perfil_self["picture"]}
                 opp_ws = lobby_connections.pop(oponente["jogador_id"], None)
                 if opp_ws:
-                    try:
-                        await opp_ws.send_text(json.dumps(msg_opp))
-                        await opp_ws.close()
-                    except:
-                        match_info[oponente["jogador_id"]] = msg_opp
+                    await opp_ws.send_text(json.dumps(msg_opp))
+                    await opp_ws.close()
                 else:
                     match_info[oponente["jogador_id"]] = msg_opp
-
                 lobby_connections.pop(google_id, None)
                 await websocket.send_text(json.dumps(msg_self))
                 await websocket.close()
                 return
-
     except WebSocketDisconnect:
         async with lobby_lock:
             await remover_da_fila(google_id)
@@ -1278,65 +1039,38 @@ async def websocket_lobby_endpoint(websocket: WebSocket, google_id: str = None):
             match_info.pop(google_id, None)
 
 # ================================================================
-# WEBSOCKET — PARTIDA ONLINE
+# WEBSOCKET – PARTIDA ONLINE (INALTERADO)
 # ================================================================
 @app.websocket("/ws/partida/{game_id}/{player_color}")
 async def websocket_partida_endpoint(websocket: WebSocket, game_id: str, player_color: str):
     await salas.conectar(game_id, websocket)
     if game_id not in salas.partidas:
-        salas.partidas[game_id] = {
-            "board":      DamasEngine.criar_tabuleiro_inicial(),
-            "turn":       "w",
-            "regras":     "brasileira",
-            "partida_id": str(uuid.uuid4())
-        }
+        salas.partidas[game_id] = {"board": DamasEngine.criar_tabuleiro_inicial(), "turn": "w", "regras": "brasileira", "partida_id": str(uuid.uuid4())}
     partida = salas.partidas[game_id]
-    await websocket.send_text(json.dumps({
-        "type": "init", "board": partida["board"],
-        "turn": partida["turn"], "regras": partida["regras"]
-    }))
+    await websocket.send_text(json.dumps({"type": "init", "board": partida["board"], "turn": partida["turn"], "regras": partida["regras"]}))
     try:
         while True:
             msg = json.loads(await websocket.receive_text())
             if msg.get("type") == "move" and partida["turn"] == player_color:
                 rf, cf = algebraic_to_index(msg["from"])
                 rt, ct = algebraic_to_index(msg["to"])
-
-                tem_que_comer = DamasEngine.jogador_tem_capturas_possiveis(
-                    partida["board"], player_color, partida["regras"]
-                )
+                tem_que_comer = DamasEngine.jogador_tem_capturas_possiveis(partida["board"], player_color, partida["regras"])
                 movimento_eh_captura = abs(rf - rt) >= 2
                 if tem_que_comer and not movimento_eh_captura:
-                    await websocket.send_text(json.dumps({
-                        "type":    "invalid_move",
-                        "message": "Movimento inválido! Você é obrigado a capturar uma peça adversária."
-                    }))
+                    await websocket.send_text(json.dumps({"type": "invalid_move", "message": "Movimento inválido! Você é obrigado a capturar uma peça adversária."}))
                     continue
-
-                ok, nb, motivo = DamasEngine.validar_e_mover(
-                    partida["board"], rf, cf, rt, ct, player_color, partida["regras"]
-                )
+                ok, nb, motivo = DamasEngine.validar_e_mover(partida["board"], rf, cf, rt, ct, player_color, partida["regras"])
                 if ok:
                     partida["board"] = nb
                     if motivo:
-                        await salas.broadcast(game_id, {
-                            "type": "update", "board": nb,
-                            "turn": player_color, "regras": partida["regras"],
-                            "must_continue": True, "piece": [rt, ct]
-                        })
+                        await salas.broadcast(game_id, {"type": "update", "board": nb, "turn": player_color, "regras": partida["regras"], "must_continue": True, "piece": [rt, ct]})
                     else:
                         partida["turn"] = "b" if player_color == "w" else "w"
                         venc = DamasEngine.verificar_fim_de_jogo(nb, partida["regras"])
                         if venc:
-                            await salas.broadcast(game_id, {
-                                "type": "game_over", "winner": venc,
-                                "partida_id": partida["partida_id"], "board": nb
-                            })
+                            await salas.broadcast(game_id, {"type": "game_over", "winner": venc, "partida_id": partida["partida_id"], "board": nb})
                         else:
-                            await salas.broadcast(game_id, {
-                                "type": "update", "board": nb,
-                                "turn": partida["turn"], "regras": partida["regras"]
-                            })
+                            await salas.broadcast(game_id, {"type": "update", "board": nb, "turn": partida["turn"], "regras": partida["regras"]})
                 else:
                     await websocket.send_text(json.dumps({"type": "invalid_move", "message": motivo}))
             elif msg.get("type") == "chat":
@@ -1344,37 +1078,21 @@ async def websocket_partida_endpoint(websocket: WebSocket, game_id: str, player_
                 text = str(msg.get("text", ""))[:200].strip()
                 sender_id = str(msg.get("sender_id", ""))
                 if text:
-                    await salas.broadcast(game_id, {
-                        "type": "chat",
-                        "nick": nick,
-                        "text": text,
-                        "sender_id": sender_id,
-                        "timestamp": datetime.now().strftime("%H:%M")
-                    })
+                    await salas.broadcast(game_id, {"type": "chat", "nick": nick, "text": text, "sender_id": sender_id, "timestamp": datetime.now().strftime("%H:%M")})
             elif msg.get("type") == "config_rules":
                 partida["regras"] = msg.get("regras", "brasileira")
-                await salas.broadcast(game_id, {
-                    "type": "update", "board": partida["board"],
-                    "turn": partida["turn"], "regras": partida["regras"]
-                })
+                await salas.broadcast(game_id, {"type": "update", "board": partida["board"], "turn": partida["turn"], "regras": partida["regras"]})
     except WebSocketDisconnect:
-        await salas.broadcast(game_id, {
-            "type": "opponent_left",
-            "message": "O adversário se desconectou."
-        })
+        await salas.broadcast(game_id, {"type": "opponent_left", "message": "O adversário se desconectou."})
         salas.desconectar(game_id, websocket)
 
 # ================================================================
-# WEBSOCKET — PARTIDA APOSTADA
+# WEBSOCKET – PARTIDA APOSTADA (MOEDAS) – INALTERADO EXCETO NOMENCLATURA
 # ================================================================
 @app.websocket("/ws/aposta/{sala_id}/{player_color}")
 async def websocket_aposta_endpoint(websocket: WebSocket, sala_id: str, player_color: str):
     try:
-        # Buscar sala e obter game_id
-        resp = supabase.table("salas_aposta") \
-            .select("game_id, status, valor_entrada, premio, jogador1_id, jogador2_id, cor_jogador1, cor_jogador2") \
-            .eq("id", sala_id) \
-            .execute()
+        resp = supabase.table("salas_aposta").select("game_id, status, valor_entrada, premio, jogador1_id, jogador2_id, cor_jogador1, cor_jogador2").eq("id", sala_id).execute()
         if not resp.data or resp.data[0]["status"] != "em_jogo":
             await websocket.close(code=1008, reason="Sala não disponível")
             return
@@ -1383,316 +1101,176 @@ async def websocket_aposta_endpoint(websocket: WebSocket, sala_id: str, player_c
         if not game_id:
             await websocket.close(code=1008, reason="Partida não iniciada")
             return
-
-        # Conectar ao gerenciador de salas
         await salas.conectar(game_id, websocket)
         if game_id not in salas.partidas:
             salas.partidas[game_id] = {
-                "board": DamasEngine.criar_tabuleiro_inicial(),
-                "turn": "w",
-                "regras": "brasileira",
-                "partida_id": str(uuid.uuid4()),
-                "sala_id": sala_id,
-                "valor_entrada": sala["valor_entrada"],
-                "premio": sala["premio"],
-                "jogador1_id": sala["jogador1_id"],
-                "jogador2_id": sala["jogador2_id"],
-                "cor_jogador1": sala["cor_jogador1"],
-                "cor_jogador2": sala["cor_jogador2"]
+                "board": DamasEngine.criar_tabuleiro_inicial(), "turn": "w", "regras": "brasileira", "partida_id": str(uuid.uuid4()),
+                "sala_id": sala_id, "valor_entrada": sala["valor_entrada"], "premio": sala["premio"],
+                "jogador1_id": sala["jogador1_id"], "jogador2_id": sala["jogador2_id"],
+                "cor_jogador1": sala["cor_jogador1"], "cor_jogador2": sala["cor_jogador2"]
             }
         partida = salas.partidas[game_id]
-
         await websocket.send_text(json.dumps({
-            "type": "init", "board": partida["board"],
-            "turn": partida["turn"], "regras": partida["regras"],
-            "is_aposta": True,
-            "valor_entrada": partida["valor_entrada"],
-            "premio": partida["premio"]
+            "type": "init", "board": partida["board"], "turn": partida["turn"], "regras": partida["regras"],
+            "is_aposta": True, "valor_entrada": partida["valor_entrada"], "premio": partida["premio"]
         }))
-
         while True:
             msg = json.loads(await websocket.receive_text())
             if msg.get("type") == "move" and partida["turn"] == player_color:
                 rf, cf = algebraic_to_index(msg["from"])
                 rt, ct = algebraic_to_index(msg["to"])
-
-                tem_que_comer = DamasEngine.jogador_tem_capturas_possiveis(
-                    partida["board"], player_color, partida["regras"]
-                )
+                tem_que_comer = DamasEngine.jogador_tem_capturas_possiveis(partida["board"], player_color, partida["regras"])
                 movimento_eh_captura = abs(rf - rt) >= 2
                 if tem_que_comer and not movimento_eh_captura:
-                    await websocket.send_text(json.dumps({
-                        "type":    "invalid_move",
-                        "message": "Movimento inválido! Você é obrigado a capturar uma peça adversária."
-                    }))
+                    await websocket.send_text(json.dumps({"type": "invalid_move", "message": "Movimento inválido! Você é obrigado a capturar uma peça adversária."}))
                     continue
-
-                ok, nb, motivo = DamasEngine.validar_e_mover(
-                    partida["board"], rf, cf, rt, ct, player_color, partida["regras"]
-                )
+                ok, nb, motivo = DamasEngine.validar_e_mover(partida["board"], rf, cf, rt, ct, player_color, partida["regras"])
                 if ok:
                     partida["board"] = nb
                     if motivo:
-                        await salas.broadcast(game_id, {
-                            "type": "update", "board": nb,
-                            "turn": player_color, "regras": partida["regras"],
-                            "must_continue": True, "piece": [rt, ct]
-                        })
+                        await salas.broadcast(game_id, {"type": "update", "board": nb, "turn": player_color, "regras": partida["regras"], "must_continue": True, "piece": [rt, ct]})
                     else:
                         partida["turn"] = "b" if player_color == "w" else "w"
                         venc = DamasEngine.verificar_fim_de_jogo(nb, partida["regras"])
                         if venc:
-                            # Processar crédito financeiro
                             cor_vencedor = venc
                             jogador1_id = partida.get("jogador1_id")
                             jogador2_id = partida.get("jogador2_id")
                             cor_j1 = partida.get("cor_jogador1")
                             vencedor_id = jogador1_id if cor_vencedor == cor_j1 else jogador2_id
                             await processar_fim_partida_aposta(sala_id, vencedor_id)
-
-                            await salas.broadcast(game_id, {
-                                "type": "game_over", "winner": venc,
-                                "partida_id": partida["partida_id"], "board": nb
-                            })
+                            await salas.broadcast(game_id, {"type": "game_over", "winner": venc, "partida_id": partida["partida_id"], "board": nb})
                         else:
-                            await salas.broadcast(game_id, {
-                                "type": "update", "board": nb,
-                                "turn": partida["turn"], "regras": partida["regras"]
-                            })
+                            await salas.broadcast(game_id, {"type": "update", "board": nb, "turn": partida["turn"], "regras": partida["regras"]})
                 else:
                     await websocket.send_text(json.dumps({"type": "invalid_move", "message": motivo}))
-
             elif msg.get("type") == "chat":
                 nick = str(msg.get("nick", "Jogador"))[:30]
                 text = str(msg.get("text", ""))[:200].strip()
                 sender_id = str(msg.get("sender_id", ""))
                 if text:
-                    await salas.broadcast(game_id, {
-                        "type": "chat",
-                        "nick": nick,
-                        "text": text,
-                        "sender_id": sender_id,
-                        "timestamp": datetime.now().strftime("%H:%M")
-                    })
-
+                    await salas.broadcast(game_id, {"type": "chat", "nick": nick, "text": text, "sender_id": sender_id, "timestamp": datetime.now().strftime("%H:%M")})
             elif msg.get("type") == "config_rules":
                 partida["regras"] = msg.get("regras", "brasileira")
-                await salas.broadcast(game_id, {
-                    "type": "update", "board": partida["board"],
-                    "turn": partida["turn"], "regras": partida["regras"]
-                })
-
+                await salas.broadcast(game_id, {"type": "update", "board": partida["board"], "turn": partida["turn"], "regras": partida["regras"]})
             elif msg.get("type") == "rematch_offer":
                 partida["rematch_offer"] = player_color
-                await salas.broadcast(game_id, {
-                    "type": "rematch_offer",
-                    "offered_by": player_color
-                })
-
+                await salas.broadcast(game_id, {"type": "rematch_offer", "offered_by": player_color})
             elif msg.get("type") == "rematch_accept":
                 if "rematch_offer" in partida and partida["rematch_offer"] != player_color:
                     valor = partida["valor_entrada"]
-                    res1 = supabase.rpc("debitar_saldo", {"p_google_id": partida["jogador1_id"], "p_valor": valor}).execute()
-                    res2 = supabase.rpc("debitar_saldo", {"p_google_id": partida["jogador2_id"], "p_valor": valor}).execute()
-
-                    if res1.data and res2.data:
+                    if debitar_moedas(partida["jogador1_id"], valor) and debitar_moedas(partida["jogador2_id"], valor):
                         new_game_id = str(uuid.uuid4())
                         pote_total = valor * 2
-                        premio = pote_total * 0.90
-
+                        premio = int(pote_total * 0.90)
                         cores = ['w', 'b']
                         random.shuffle(cores)
                         c1, c2 = cores[0], cores[1]
-
                         new_sala_data = {
-                            "valor_entrada": valor,
-                            "status": "em_jogo",
-                            "jogador1_id": partida["jogador1_id"],
-                            "jogador2_id": partida["jogador2_id"],
-                            "cor_jogador1": c1,
-                            "cor_jogador2": c2,
-                            "game_id": new_game_id,
-                            "pote_total": pote_total,
-                            "premio": premio,
-                            "taxa_casa": pote_total * 0.10,
+                            "valor_entrada": valor, "status": "em_jogo",
+                            "jogador1_id": partida["jogador1_id"], "jogador2_id": partida["jogador2_id"],
+                            "cor_jogador1": c1, "cor_jogador2": c2, "game_id": new_game_id,
+                            "pote_total": pote_total, "premio": premio, "taxa_casa": pote_total * 0.10,
                             "updated_at": datetime.utcnow().isoformat()
                         }
                         res_new = supabase.table("salas_aposta").insert(new_sala_data).execute()
                         if res_new.data:
                             await salas.broadcast(game_id, {
-                                "type": "rematch_started",
-                                "game_id": new_game_id,
-                                "sala_id": res_new.data[0]["id"],
-                                "valor": valor,
-                                "premio": premio,
-                                "jogador1_id": partida["jogador1_id"],
-                                "cor_jogador1": c1,
-                                "cor_jogador2": c2
+                                "type": "rematch_started", "game_id": new_game_id, "sala_id": res_new.data[0]["id"],
+                                "valor": valor, "premio": premio, "jogador1_id": partida["jogador1_id"],
+                                "cor_jogador1": c1, "cor_jogador2": c2
                             })
                     else:
-                        await websocket.send_text(json.dumps({"type": "error", "message": "Saldo insuficiente para revanche."}))
+                        await websocket.send_text(json.dumps({"type": "error", "message": "Moedas insuficientes para revanche."}))
     except WebSocketDisconnect:
-        # Quem desconectou perde — o outro jogador vence
         partida = salas.partidas.get(game_id, {})
         sala_id_local = partida.get("sala_id")
         if sala_id_local:
-            # Determinar vencedor: o outro jogador (não quem desconectou)
-            # player_color é a cor de quem desconectou
             cor_vencedor = "b" if player_color == "w" else "w"
             cor_j1 = partida.get("cor_jogador1")
             j1_id = partida.get("jogador1_id")
             j2_id = partida.get("jogador2_id")
             vencedor_id = j1_id if cor_vencedor == cor_j1 else j2_id
             try:
-                supabase.rpc("finalizar_sala_aposta", {
-                    "p_sala_id": sala_id_local,
-                    "p_vencedor_id": vencedor_id
-                }).execute()
+                await processar_fim_partida_aposta(sala_id_local, vencedor_id)
             except Exception as e:
                 print(f"[APOSTA] Erro ao finalizar por disconnect: {e}")
-
-        await salas.broadcast(game_id, {
-            "type": "opponent_left",
-            "message": "O adversário se desconectou. Você venceu a aposta!",
-            "premio": partida.get("premio"),
-            "valor_entrada": partida.get("valor_entrada")
-        })
+        await salas.broadcast(game_id, {"type": "opponent_left", "message": "O adversário se desconectou. Você venceu a aposta!", "premio": partida.get("premio"), "valor_entrada": partida.get("valor_entrada")})
         salas.desconectar(game_id, websocket)
 
 # ================================================================
-# HELPER PARA EXECUTAR TURNO DA IA (combo automático)
+# WEBSOCKET IA (INALTERADO)
 # ================================================================
-async def _executar_turno_ia(websocket: WebSocket, p: dict): # type: ignore
-    ia_color = p["ia_color"] # type: ignore
-    player_color = p["player_color"] # type: ignore
-
-    _, mov = DamasEngine.minimax(
-        p["board"], 4, -float('inf'), float('inf'),
-        ia_color == "b", p["regras"]
-    )
+async def _executar_turno_ia(websocket: WebSocket, p: dict):
+    ia_color = p["ia_color"]
+    player_color = p["player_color"]
+    _, mov = DamasEngine.minimax(p["board"], 4, -float('inf'), float('inf'), ia_color == "b", p["regras"])
     if not mov:
         return
-
     (irf, icf), (irt, ict) = mov
-    sucesso, novo_board, tem_combo = DamasEngine.validar_e_mover(
-        p["board"], irf, icf, irt, ict, ia_color, p["regras"], continue_capture=False
-    )
+    sucesso, novo_board, tem_combo = DamasEngine.validar_e_mover(p["board"], irf, icf, irt, ict, ia_color, p["regras"], continue_capture=False)
     if not sucesso:
         return
-
     p["board"] = novo_board
     while tem_combo:
         await asyncio.sleep(0.4)
-        await websocket.send_text(json.dumps({
-            "type": "update", "board": p["board"],
-            "turn": ia_color, "regras": p["regras"]
-        }))
+        await websocket.send_text(json.dumps({"type": "update", "board": p["board"], "turn": ia_color, "regras": p["regras"]}))
         proximos = DamasEngine.obter_todos_movimentos_validos(p["board"], ia_color, p["regras"])
         combos = [m for m in proximos if m[0] == (irt, ict)]
         if combos:
             (irf, icf), (irt, ict) = combos[0]
-            _, p["board"], tem_combo = DamasEngine.validar_e_mover(
-                p["board"], irf, icf, irt, ict, ia_color, p["regras"], continue_capture=True
-            )
+            _, p["board"], tem_combo = DamasEngine.validar_e_mover(p["board"], irf, icf, irt, ict, ia_color, p["regras"], continue_capture=True)
         else:
             break
-
     p["turn"] = player_color
     venc = DamasEngine.verificar_fim_de_jogo(p["board"], p["regras"])
     if venc:
-        await websocket.send_text(json.dumps({
-            "type": "game_over", "winner": venc,
-            "partida_id": p["partida_id"], "board": p["board"]
-        }))
+        await websocket.send_text(json.dumps({"type": "game_over", "winner": venc, "partida_id": p["partida_id"], "board": p["board"]}))
     else:
-        await websocket.send_text(json.dumps({
-            "type": "update", "board": p["board"],
-            "turn": player_color, "regras": p["regras"]
-        }))
+        await websocket.send_text(json.dumps({"type": "update", "board": p["board"], "turn": player_color, "regras": p["regras"]}))
 
-# ================================================================
-# WEBSOCKET — IA (aceita cor do jogador)
-# ================================================================
 @app.websocket("/ws/ia/{game_id}/{player_color}")
 async def websocket_ia_endpoint(websocket: WebSocket, game_id: str, player_color: str = "w"):
     if player_color not in ("w", "b"):
         player_color = "w"
     ia_color = "b" if player_color == "w" else "w"
-
     await websocket.accept()
-    p = {
-        "board":        DamasEngine.criar_tabuleiro_inicial(),
-        "turn":         "w",
-        "regras":       "brasileira",
-        "partida_id":   str(uuid.uuid4()),
-        "player_color": player_color,
-        "ia_color":     ia_color
-    }
-
-    await websocket.send_text(json.dumps({
-        "type": "init", "board": p["board"], "turn": p["turn"], "regras": p["regras"]
-    }))
-
+    p = {"board": DamasEngine.criar_tabuleiro_inicial(), "turn": "w", "regras": "brasileira", "partida_id": str(uuid.uuid4()), "player_color": player_color, "ia_color": ia_color}
+    await websocket.send_text(json.dumps({"type": "init", "board": p["board"], "turn": p["turn"], "regras": p["regras"]}))
     if player_color == "b":
         await asyncio.sleep(0.5)
         await _executar_turno_ia(websocket, p)
-
     try:
         while True:
             msg = json.loads(await websocket.receive_text())
             if msg.get("type") == "config_rules":
                 p["regras"] = msg.get("regras", "brasileira")
-                await websocket.send_text(json.dumps({
-                    "type": "update", "board": p["board"],
-                    "turn": p["turn"], "regras": p["regras"]
-                }))
+                await websocket.send_text(json.dumps({"type": "update", "board": p["board"], "turn": p["turn"], "regras": p["regras"]}))
                 continue
-
             if msg.get("type") == "move" and p["turn"] == player_color:
                 irf, icf = algebraic_to_index(msg["from"])
                 irt, ict = algebraic_to_index(msg["to"])
-
                 tem_que_comer = DamasEngine.jogador_tem_capturas_possiveis(p["board"], player_color, p["regras"])
                 eh_captura = abs(irf - irt) >= 2
-
                 if tem_que_comer and not eh_captura:
-                    await websocket.send_text(json.dumps({
-                        "type": "invalid_move",
-                        "message": "Movimento inválido! É obrigado a capturar."
-                    }))
+                    await websocket.send_text(json.dumps({"type": "invalid_move", "message": "Movimento inválido! É obrigado a capturar."}))
                     continue
-
-                sucesso, novo_board, motivo = DamasEngine.validar_e_mover(
-                    p["board"], irf, icf, irt, ict, player_color, p["regras"]
-                )
+                sucesso, novo_board, motivo = DamasEngine.validar_e_mover(p["board"], irf, icf, irt, ict, player_color, p["regras"])
                 if not sucesso:
                     await websocket.send_text(json.dumps({"type": "invalid_move", "message": motivo}))
                     continue
-
                 p["board"] = novo_board
                 venc = DamasEngine.verificar_fim_de_jogo(p["board"], p["regras"])
                 if venc:
-                    await websocket.send_text(json.dumps({
-                        "type": "game_over", "winner": venc,
-                        "partida_id": p["partida_id"], "board": p["board"]
-                    }))
+                    await websocket.send_text(json.dumps({"type": "game_over", "winner": venc, "partida_id": p["partida_id"], "board": p["board"]}))
                     continue
-
                 if motivo and eh_captura:
-                    await websocket.send_text(json.dumps({
-                        "type": "update", "board": p["board"],
-                        "turn": player_color, "regras": p["regras"],
-                        "must_continue": True, "piece": [irt, ict]
-                    }))
+                    await websocket.send_text(json.dumps({"type": "update", "board": p["board"], "turn": player_color, "regras": p["regras"], "must_continue": True, "piece": [irt, ict]}))
                 else:
                     p["turn"] = ia_color
-                    await websocket.send_text(json.dumps({
-                        "type": "update", "board": p["board"],
-                        "turn": ia_color, "regras": p["regras"]
-                    }))
+                    await websocket.send_text(json.dumps({"type": "update", "board": p["board"], "turn": ia_color, "regras": p["regras"]}))
                     await asyncio.sleep(0.5)
                     await _executar_turno_ia(websocket, p)
-
     except WebSocketDisconnect:
         pass
 

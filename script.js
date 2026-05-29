@@ -14,8 +14,8 @@ let partidaRegistrada = false;
 let minhaCorAtual   = 'w';
 let opponentPicture = ""; // foto do adversário atual
 
-let userSaldo = 0;            // saldo do usuário
-let userMoedas = 0;           // moedas do usuário
+let userSaldo = 0;            // saldo em reais (apenas para depósitos PIX)
+let userMoedas = 0;           // moedas para apostas e recompensas
 let saldoInterval = null;     // polling para atualização automática
 
 // Variáveis para aposta
@@ -23,7 +23,7 @@ let apostaSalaId = null;
 let apostaPollingInterval = null;
 let apostaValorSelecionado = null;
 
-// Valores permitidos e prêmios
+// Valores permitidos e prêmios (valores em moedas)
 const VALORES_APOSTA = [1, 3, 5, 10, 20, 50];
 
 let userProfile = {
@@ -661,23 +661,71 @@ function atualizarMoedasUI(moedas) {
     if (saldoBox) saldoBox.style.display = 'flex';
 }
 
-async function verificarBonusDiario() {
-    const credential = localStorage.getItem('dr_credential');
-    if (!credential || !userProfile.googleId) return;
+async function verificarEExibirBonusDiario() {
+    if (!userProfile.googleId) return;
     try {
-        const res = await fetch(`${API}/api/bonus/login-diario`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token: credential })
-        });
+        const res = await fetch(`${API}/api/bonus/disponivel?google_id=${userProfile.googleId}`);
+        if (!res.ok) return;
         const data = await res.json();
-        if (data.concedido) {
-            userMoedas = data.moedas;
-            atualizarMoedasUI(userMoedas);
-            setTimeout(() => showToast('🌟 Bônus diário: +300 moedas!', 'success', 5000), 2000);
+        if (data.disponivel) {
+            // Exibir modal de resgate manual
+            exibirModalBonusDiario();
         }
     } catch (e) { console.warn('Erro ao verificar bônus diário:', e); }
 }
 
+function exibirModalBonusDiario() {
+    // Criar modal se não existir
+    let modal = document.getElementById('modalBonusDiario');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'modalBonusDiario';
+        modal.className = 'modal-overlay';
+        modal.innerHTML = `
+            <div class="modal-box">
+                <div class="modal-trophy">🎁</div>
+                <div class="modal-title">Bônus Diário!</div>
+                <div class="modal-subtitle">Você tem 300 moedas esperando por você. Resgate agora!</div>
+                <div class="modal-actions">
+                    <button class="btn-modal-secondary" onclick="fecharModalBonus()">Agora não</button>
+                    <button class="btn-modal-primary" id="btnResgatarBonus">Resgatar Bônus</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        document.getElementById('btnResgatarBonus').onclick = async () => {
+            fecharModalBonus();
+            await resgatarBonusDiario();
+        };
+    }
+    modal.style.display = 'flex';
+}
+
+function fecharModalBonus() {
+    const modal = document.getElementById('modalBonusDiario');
+    if (modal) modal.style.display = 'none';
+}
+
+async function resgatarBonusDiario() {
+    const credential = localStorage.getItem('dr_credential');
+    if (!credential || !userProfile.googleId) return;
+    try {
+        const res = await fetch(`${API}/api/bonus/resgatar`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: credential })
+        });
+        const data = await res.json();
+        if (res.ok && data.resgatado) {
+            userMoedas = data.moedas;
+            atualizarMoedasUI(userMoedas);
+            showToast(' Bônus resgatado! +300 moedas!', 'success', 4000);
+        } else {
+            showToast('Erro ao resgatar bônus.', 'error');
+        }
+    } catch (e) {
+        showToast('Erro de conexão.', 'error');
+    }
+}
 // ============================================================
 // RANKING
 // ============================================================
@@ -906,7 +954,7 @@ function abrirModalFimJogo(winner, minhaCor) {
     document.getElementById('modalFimJogo').classList.add('open');
     // Bug 8: Registrar jogo com valor correto para apostas
     if (modoAtual === 'aposta' && window.apostaInfo) {
-        registrarJogoNoServidor(resultado, window.apostaInfo.valor);
+        registrarJogoNoServidor(resultado, window.apostaInfo.valor); // valorAposta é em moedas
         // Melhoria 1: Atualizar saldo imediatamente após partida apostada
         setTimeout(() => buscarSaldoAtualizado(), 1500);
     } else {
@@ -923,7 +971,7 @@ function fecharModal() {
 // ============================================================
 async function registrarJogoNoServidor(resultado, valorAposta = 0) {
     if (!userProfile.googleId) return;
-    if (partidaRegistrada) return;
+    if (partidaRegistrada) return; // valorAposta agora é em moedas
     partidaRegistrada = true;
 
     const credential = localStorage.getItem('dr_credential');
@@ -1005,15 +1053,34 @@ function iniciarPollingSaldo() {
     }, 30000); 
 }
 
-async function solicitarDeposito() {
+// ============================================================
+// COMPRA DE MOEDAS (antes Depósito)
+// ============================================================
+async function solicitarCompraMoedas() {
     const modal = document.getElementById('modalDepositoValor');
     const input = document.getElementById('depositoValorInput');
     input.value = '';
     modal.style.display = 'flex';
+    // Adicionar texto explicativo
+    const infoDiv = document.getElementById('infoConversao');
+    if (!infoDiv) {
+        const info = document.createElement('div');
+        info.id = 'infoConversao';
+        info.style.marginTop = '10px';
+        info.style.fontSize = '12px';
+        info.style.color = 'var(--text-secondary)';
+        info.innerHTML = '💰 R$ 10,00 = 10.000 moedas';
+        modal.querySelector('.modal-box').appendChild(info);
+    } else {
+        infoDiv.style.display = 'block';
+    }
 }
+
 
 function fecharModalDepositoValor() {
     document.getElementById('modalDepositoValor').style.display = 'none';
+    const info = document.getElementById('infoConversao');
+    if (info) info.style.display = 'none';
 }
 
 async function confirmarDeposito() {
@@ -1038,7 +1105,7 @@ async function confirmarDeposito() {
                 "Content-Type": "application/json",
                 ...(credential ? { "Authorization": `Bearer ${credential}` } : {})
             },
-            body: JSON.stringify({ googleId: userProfile.googleId, valor })
+            body: JSON.stringify({ googleId: userProfile.googleId, valor, tipo: "compra_moedas" }) // Alterado para compra de moedas
         });
         const data = await res.json();
         if (res.ok) {
@@ -1086,7 +1153,7 @@ async function handleCredentialResponse(response) {
     await processarLogin(response.credential);
 }
 
-async function processarLogin(token) {
+async function processarLogin(token) { // Sem bônus automático
     try {
         const res = await fetch(`${API}/auth/google`, {
             method:  'POST',
@@ -1135,7 +1202,7 @@ async function processarLogin(token) {
 // ============================================================
 // CARREGAR PERFIL DO SERVIDOR
 // ============================================================
-async function carregarPerfilDoServidor(googleId) {
+async function carregarPerfilDoServidor(googleId) { // Com ajuste para patentes e moedas
     if (!googleId) return;
     try {
         const res = await fetch(`${API}/get-profile/${googleId}`);
@@ -1192,7 +1259,7 @@ function executarLogout() {
     google.accounts.id.disableAutoSelect();
     localStorage.removeItem('dr_credential');
     userProfile = {
-        googleId: null, nick: "", bio: "", telefone: "", cpf: "", dataNascimento: "",
+        googleId: null, nick: "", bio: "", telefone: "", cpf: "", dataNascimento: "", // Com patentes
         privacidade: { telefone: false, cpf: false }, patenteOnline: "bronze", patenteApostado: "bronze", pontosOnline: 0, pontosApostado: 0
     };
     historicoJogos = [];
@@ -1358,13 +1425,13 @@ function renderizarBotoesAposta() {
     if (!grid) return;
     grid.innerHTML = '';
     for (let valor of VALORES_APOSTA) {
-        const premio = valor * 1.8;
-        const disabled = (userSaldo < valor);
+        const premio = Math.floor(valor * 1.8);
+        const disabled = (userMoedas < valor);
         const card = document.createElement('div');
         card.className = `aposta-card ${disabled ? 'disabled' : ''}`;
         card.innerHTML = `
-            <div class="aposta-valor">R$ ${valor.toFixed(2)}</div>
-            <div class="aposta-premio">prêmio: R$ ${premio.toFixed(2)}</div>
+            <div class="aposta-valor">🪙 ${valor} moedas</div>
+            <div class="aposta-premio">prêmio: 🪙 ${premio} moedas</div>
         `;
         if (!disabled) {
             card.onclick = () => abrirModalConfirmarAposta(valor, premio);
@@ -1421,7 +1488,7 @@ async function entrarFilaAposta(valor) {
                 conectarPartidaAposta(data.game_id, data.sala_id, valor, data.premio, data.color);
             } else {
                 apostaSalaId = data.sala_id;
-                document.getElementById('aguardandoValor').textContent = `R$ ${valor.toFixed(2)}`;
+                document.getElementById('aguardandoValor').textContent = `🪙 ${valor} moedas`;
                 document.getElementById('modalAguardandoOponente').style.display = 'flex';
                 iniciarPollingAposta(data.sala_id, valor);
             }
@@ -1510,7 +1577,7 @@ function conectarPartidaAposta(gameId, salaId, valorEntrada, premio, minhaCor) {
             btnAbandono.textContent = '🏳 Abandonar';
             btnAbandono.onclick = confirmarAbandono;
         }
-        showToast(`Aposta R$ ${valorEntrada} — prêmio R$ ${premio}`, "success", 5000);
+        showToast(`Aposta de ${valorEntrada} moedas — prêmio ${premio} moedas`, "success", 5000);
         let banner = document.getElementById('apostaBanner');
         if (!banner) {
             banner = document.createElement('div');
@@ -1519,7 +1586,7 @@ function conectarPartidaAposta(gameId, salaId, valorEntrada, premio, minhaCor) {
             const topbar = document.querySelector('.game-topbar');
             topbar.parentNode.insertBefore(banner, topbar);
         }
-        banner.innerHTML = `💰 APOSTA: R$ ${valorEntrada}  →  Prêmio: R$ ${premio}`;
+        banner.innerHTML = `🪙 APOSTA: ${valorEntrada} moedas → Prêmio: ${premio} moedas`;
         banner.style.display = 'block';
     };
     ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), minhaCorAtual); // type: ignore
