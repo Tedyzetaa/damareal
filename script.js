@@ -15,6 +15,7 @@ let minhaCorAtual   = 'w';
 let opponentPicture = ""; // foto do adversário atual
 
 let userSaldo = 0;            // saldo do usuário
+let userMoedas = 0;           // moedas do usuário
 let saldoInterval = null;     // polling para atualização automática
 
 // Variáveis para aposta
@@ -32,7 +33,9 @@ let userProfile = {
     telefone:      "",
     cpf:           "",
     dataNascimento:"",
-    privacidade:   { telefone: false, cpf: false }
+    privacidade:   { telefone: false, cpf: false },
+    patenteOnline: "bronze", patenteApostado: "bronze",
+    pontosOnline: 0, pontosApostado: 0
 };
 
 let historicoJogos = [];
@@ -646,6 +649,173 @@ function mudarRegras(novaRegra) {
 }
 
 // ============================================================
+// MOEDAS E BÔNUS DIÁRIO
+// ============================================================
+function atualizarMoedasUI(moedas) {
+    userMoedas = moedas;
+    const moedaSpan = document.getElementById('userMoedasDisplay');
+    const apostaMoedasSpan = document.getElementById('apostaMoedasDisplay');
+    if (moedaSpan) moedaSpan.textContent = `${moedas} moedas`;
+    if (apostaMoedasSpan) apostaMoedasSpan.textContent = moedas;
+    const saldoBox = document.getElementById('saldoContainer');
+    if (saldoBox) saldoBox.style.display = 'flex';
+}
+
+async function verificarBonusDiario() {
+    const credential = localStorage.getItem('dr_credential');
+    if (!credential || !userProfile.googleId) return;
+    try {
+        const res = await fetch(`${API}/api/bonus/login-diario`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: credential })
+        });
+        const data = await res.json();
+        if (data.concedido) {
+            userMoedas = data.moedas;
+            atualizarMoedasUI(userMoedas);
+            setTimeout(() => showToast('🌟 Bônus diário: +300 moedas!', 'success', 5000), 2000);
+        }
+    } catch (e) { console.warn('Erro ao verificar bônus diário:', e); }
+}
+
+// ============================================================
+// RANKING
+// ============================================================
+let rankingModoAtual = 'online';
+const PATENTE_ICONE = { bronze: '🥉', prata: '🥈', ouro: '🥇', mestre: '👑' };
+
+async function carregarRanking(modo = 'online') {
+    rankingModoAtual = modo;
+    document.getElementById('tabRankingOnline').className = modo === 'online' ? 'btn-modal-primary' : 'btn-modal-secondary';
+    document.getElementById('tabRankingApostado').className = modo === 'apostado' ? 'btn-modal-primary' : 'btn-modal-secondary';
+    const lista = document.getElementById('rankingLista');
+    lista.innerHTML = '<div class="chat-empty">Carregando...</div>';
+    try {
+        const res = await fetch(`${API}/api/ranking/${modo}`);
+        const data = await res.json();
+        renderRanking(data.ranking, modo);
+    } catch (e) {
+        lista.innerHTML = '<div class="chat-empty">Erro ao carregar ranking.</div>';
+    }
+}
+
+function renderRanking(lista, modo) {
+    const container = document.getElementById('rankingLista');
+    if (!lista || lista.length === 0) {
+        container.innerHTML = '<div class="chat-empty">Nenhum jogador no ranking ainda.</div>';
+        return;
+    }
+    container.innerHTML = '';
+    lista.forEach((jogador) => {
+        const isEu = jogador.google_id === userProfile.googleId;
+        const medalha = jogador.posicao === 1 ? '🥇' : jogador.posicao === 2 ? '🥈' : jogador.posicao === 3 ? '🥉' : `#${jogador.posicao}`;
+        const card = document.createElement('div');
+        card.className = 'ranking-card' + (isEu ? ' ranking-card-eu' : '');
+        card.innerHTML = `
+            <span class="ranking-pos">${medalha}</span>
+            <img src="${jogador.foto_url || 'https://ui-avatars.com/api/?name=' + encodeURIComponent(jogador.nome) + '&background=random'}" class="ranking-avatar" onerror="this.src='https://ui-avatars.com/api/?name=?&background=random'">
+            <div class="ranking-info">
+                <span class="ranking-nome">${escapeHtml(jogador.nome)}</span>
+                <span class="ranking-patente">${PATENTE_ICONE[jogador.patente] || '🥉'} ${jogador.patente.charAt(0).toUpperCase() + jogador.patente.slice(1)}</span>
+            </div>
+            <span class="ranking-pontos">${jogador.pontos} pts</span>
+        `;
+        if (!isEu && userProfile.googleId) {
+            const btnConvite = document.createElement('button');
+            btnConvite.className = 'btn-back';
+            btnConvite.style.cssText = 'flex-shrink:0; font-size:11px; padding:4px 8px;';
+            btnConvite.textContent = '✉ Convidar';
+            btnConvite.onclick = () => enviarConvitePersonalizado(jogador.google_id, jogador.nome);
+            card.appendChild(btnConvite);
+        }
+        container.appendChild(card);
+    });
+    const minhaPos = document.getElementById('rankingMinhaPos');
+    if (userProfile.googleId) {
+        const eu = lista.find(j => j.google_id === userProfile.googleId);
+        if (eu) minhaPos.textContent = `Sua posição: #${eu.posicao} — ${eu.pontos} pts`;
+        else minhaPos.textContent = `Você não está no top 50 ainda. Continue jogando!`;
+    }
+}
+
+// ============================================================
+// CONVITE PERSONALIZADO
+// ============================================================
+let lobbyWsConvite = null;
+
+function conectarLobbyParaConvites() {
+    if (lobbyWsConvite && lobbyWsConvite.readyState === WebSocket.OPEN) return;
+    if (!userProfile.googleId) return;
+    const wsProtocol = API.startsWith('https') ? 'wss' : 'ws';
+    lobbyWsConvite = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/lobby?google_id=${userProfile.googleId}`);
+    lobbyWsConvite.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        if (data.type === 'invite_received') {
+            mostrarModalConviteRecebido(data);
+        } else if (data.type === 'invite_rejected') {
+            showToast('❌ O jogador recusou o convite.', 'error');
+        } else if (data.type === 'invite_error') {
+            showToast(data.mensagem || 'Jogador não disponível.', 'error');
+        } else if (data.type === 'match_found') {
+            if (lobbyWsConvite) { lobbyWsConvite.close(); lobbyWsConvite = null; }
+            conectarPartidaOnline(data.game_id, data.color);
+        }
+    };
+}
+
+function enviarConvitePersonalizado(toGoogleId, toNick) {
+    if (!userProfile.googleId) {
+        showToast('Você precisa estar logado para convidar.', 'error');
+        return;
+    }
+    conectarLobbyParaConvites();
+    setTimeout(() => {
+        if (lobbyWsConvite && lobbyWsConvite.readyState === WebSocket.OPEN) {
+            lobbyWsConvite.send(JSON.stringify({
+                type: 'invite_send', to_google_id: toGoogleId, from_nick: userProfile.nick || 'Jogador'
+            }));
+            showToast(`✉ Convite enviado para ${toNick}!`, 'info');
+        } else {
+            showToast('Conectando ao lobby... tente novamente em instantes.', 'info');
+        }
+    }, 600);
+}
+
+function mostrarModalConviteRecebido(data) {
+    let modal = document.getElementById('modalConvite');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'modalConvite';
+        modal.className = 'modal-overlay';
+        modal.innerHTML = `
+            <div class="modal-box">
+                <div class="modal-trophy">✉</div>
+                <div class="modal-title">Convite Recebido</div>
+                <div class="modal-subtitle">${data.from_nick} quer jogar com você!</div>
+                <div class="modal-actions">
+                    <button class="btn-modal-secondary" id="btnRecusarConvite">Recusar</button>
+                    <button class="btn-modal-primary" id="btnAceitarConvite">Aceitar</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    modal.style.display = 'flex';
+    document.getElementById('btnAceitarConvite').onclick = () => {
+        modal.style.display = 'none';
+        if (lobbyWsConvite && lobbyWsConvite.readyState === WebSocket.OPEN) {
+            lobbyWsConvite.send(JSON.stringify({ type: 'invite_accept', from_google_id: data.from_google_id }));
+        }
+    };
+    document.getElementById('btnRecusarConvite').onclick = () => {
+        modal.style.display = 'none';
+        if (lobbyWsConvite && lobbyWsConvite.readyState === WebSocket.OPEN) {
+            lobbyWsConvite.send(JSON.stringify({ type: 'invite_reject', from_google_id: data.from_google_id }));
+        }
+    };
+}
+
+// ============================================================
 // ABANDONO / CANCELAMENTO
 // ============================================================
 function confirmarAbandono() {
@@ -935,8 +1105,13 @@ async function processarLogin(token) {
         userProfile.googleId = userData.google_id;
         userProfile.picture  = userData.picture;
 
-        atualizarSaldoUI(userData.saldo || 0);
-
+        userSaldo = userData.saldo || 0;
+        userMoedas = userData.moedas || 0;
+        atualizarSaldoUI(userSaldo);
+        atualizarMoedasUI(userMoedas);
+        if (userData.bonus_cadastro) {
+            setTimeout(() => showToast('🎁 Bônus de cadastro: +1000 moedas creditadas!', 'success', 6000), 1500);
+        }
         document.getElementById('googleBtnContainer').style.display = 'none';
         const ui = document.getElementById('userInfo');
         ui.style.display = 'flex';
@@ -948,6 +1123,8 @@ async function processarLogin(token) {
         showToast(`Bem-vindo, ${nomeExibido}!`, 'success');
         await carregarPerfilDoServidor(userData.google_id);
         iniciarPollingSaldo();
+        verificarBonusDiario();
+        conectarLobbyParaConvites();
     } catch (err) {
         console.error("Erro no processamento do login:", err);
         document.getElementById('googleBtnContainer').style.display = 'block';
@@ -982,6 +1159,23 @@ async function carregarPerfilDoServidor(googleId) {
             document.getElementById('userPicture').src = data.foto_url;
             userProfile.picture = data.foto_url;
         }
+        userMoedas = data.moedas || 0;
+        atualizarMoedasUI(userMoedas);
+        // patentes
+        const patenteIcones = { bronze: '🥉', prata: '🥈', ouro: '🥇', mestre: '👑' };
+        const patenteNomes = { bronze: 'Bronze', prata: 'Prata', ouro: 'Ouro', mestre: 'Mestre' };
+        const pOnline = data.patente_online || 'bronze';
+        const pApostado = data.patente_apostado || 'bronze';
+        document.getElementById('iconePatenteOnline').textContent = patenteIcones[pOnline];
+        document.getElementById('nomePatenteOnline').textContent = patenteNomes[pOnline];
+        document.getElementById('pontosPatenteOnline').textContent = `${data.pontos_online || 0} pts`;
+        document.getElementById('iconePatenteApostado').textContent = patenteIcones[pApostado];
+        document.getElementById('nomePatenteApostado').textContent = patenteNomes[pApostado];
+        document.getElementById('pontosPatenteApostado').textContent = `${data.pontos_apostado || 0} pts`;
+        userProfile.patenteOnline = pOnline;
+        userProfile.patenteApostado = pApostado;
+        userProfile.pontosOnline = data.pontos_online || 0;
+        userProfile.pontosApostado = data.pontos_apostado || 0;
         historicoJogos = (data.historico || []).map(h => ({
             tipo:      h.tipo,
             resultado: h.resultado,
@@ -999,7 +1193,7 @@ function executarLogout() {
     localStorage.removeItem('dr_credential');
     userProfile = {
         googleId: null, nick: "", bio: "", telefone: "", cpf: "", dataNascimento: "",
-        privacidade: { telefone: false, cpf: false }
+        privacidade: { telefone: false, cpf: false }, patenteOnline: "bronze", patenteApostado: "bronze", pontosOnline: 0, pontosApostado: 0
     };
     historicoJogos = [];
     ['nick','bio','telefone','cpf','dataNascimento'].forEach(id => {
@@ -1180,8 +1374,10 @@ function renderizarBotoesAposta() {
 }
 
 function atualizarSaldoNaTelaAposta() {
-    const span = document.getElementById('apostaSaldoAtual');
-    if (span) span.textContent = `R$ ${userSaldo.toFixed(2)}`;
+    const spanReal = document.getElementById('apostaSaldoReal');
+    const spanMoedas = document.getElementById('apostaMoedasDisplay');
+    if (spanReal) spanReal.textContent = `R$ ${userSaldo.toFixed(2)}`;
+    if (spanMoedas) spanMoedas.textContent = userMoedas;
 }
 
 function abrirModalConfirmarAposta(valor, premio) {

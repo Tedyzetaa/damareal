@@ -12,10 +12,9 @@
 </head>
 <body>
 
-<!-- Toast container -->
 <div id="toast-container"></div>
 
-<!-- Modal fim de jogo -->
+<!-- Modal fim de jogo (inalterado) -->
 <div class="modal-overlay" id="modalFimJogo">
     <div class="modal-box">
         <div class="modal-trophy" id="modalTrophy">🏆</div>
@@ -28,7 +27,7 @@
     </div>
 </div>
 
-<!-- Modal de depósito (seleção de valor) -->
+<!-- Modal depósito valor (seleção) -->
 <div id="modalDepositoValor" class="modal-overlay" style="display: none;">
     <div class="modal-box">
         <div class="modal-title">Depósito via Pix</div>
@@ -41,7 +40,7 @@
     </div>
 </div>
 
-<!-- Modal de depósito -->
+<!-- Modal depósito QR -->
 <div id="modalDeposito" class="modal-overlay" style="display: none;">
     <div class="modal-box">
         <div class="modal-title">Pagamento via Pix</div>
@@ -53,7 +52,7 @@
     </div>
 </div>
 
-<!-- Modal de confirmação de aposta -->
+<!-- Modal confirmar aposta -->
 <div id="modalConfirmarAposta" class="modal-overlay" style="display: none;">
     <div class="modal-box">
         <div class="modal-title">Confirmar Aposta</div>
@@ -70,7 +69,7 @@
     </div>
 </div>
 
-<!-- Modal de aguardando oponente -->
+<!-- Modal aguardando oponente -->
 <div id="modalAguardandoOponente" class="modal-overlay" style="display: none;">
     <div class="modal-box">
         <div class="modal-title">Aguardando oponente</div>
@@ -82,24 +81,17 @@
     </div>
 </div>
 
-<!-- ============================================================
-     WRAPPER PRINCIPAL
-============================================================ -->
+<!-- WRAPPER PRINCIPAL -->
 <div class="app-wrapper">
 
-    <!-- ==========================
-         TELA: MENU PRINCIPAL
-    ========================== -->
+    <!-- TELA: MENU PRINCIPAL -->
     <div id="screenMenu" class="screen active">
-
-        <!-- Auth bar -->
         <div class="auth-bar">
             <div id="googleBtnContainer"></div>
             <div id="userInfo" class="user-profile">
-                <!-- Caixa de saldo -->
                 <div id="saldoContainer" class="saldo-box" style="display: none;">
-                    <span class="saldo-icon">💰</span>
-                    <span id="userSaldo" class="saldo-valor">R$ 0,00</span>
+                    <span class="saldo-icon">🪙</span>
+                    <span id="userMoedasDisplay" class="saldo-valor">0 moedas</span>
                 </div>
                 <img id="userPicture" src="" alt="Avatar">
                 <span id="userName">Jogador</span>
@@ -107,7 +99,6 @@
             </div>
         </div>
 
-        <!-- Hero -->
         <div class="hero">
             <div class="hero-emblem">
                 <svg viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -129,16 +120,11 @@
 
         <div class="divider"><span>Selecione o Modo</span></div>
 
-        <!-- Cards de modo -->
         <div class="menu-grid">
-
             <button class="mode-card online" onclick="iniciarMatchmaking()">
                 <div class="mode-icon">⚡</div>
                 <div class="mode-text">
-                    <span class="mode-name">
-                        Partida Online
-                        <span class="badge badge-live">LIVE</span>
-                    </span>
+                    <span class="mode-name">Partida Online <span class="badge badge-live">LIVE</span></span>
                     <span class="mode-desc">Confronte oponentes reais via matchmaking em tempo real</span>
                 </div>
                 <span class="mode-arrow">›</span>
@@ -147,10 +133,7 @@
             <button class="mode-card apostada" onclick="showLobbyApostas()">
                 <div class="mode-icon">💰</div>
                 <div class="mode-text">
-                    <span class="mode-name">
-                        Mesa Apostada
-                        <span class="badge badge-beta">BETA</span>
-                    </span>
+                    <span class="mode-name">Mesa Apostada <span class="badge badge-beta">BETA</span></span>
                     <span class="mode-desc">Dispute saldos via Pix com protocolo Lockstep de segurança</span>
                 </div>
                 <span class="mode-arrow">›</span>
@@ -159,11 +142,17 @@
             <button class="mode-card ia" onclick="jogarContraIA()">
                 <div class="mode-icon">🤖</div>
                 <div class="mode-text">
-                    <span class="mode-name">
-                        Treino contra IA
-                        <span class="badge badge-local">LOCAL</span>
-                    </span>
-                    <span class="mode-desc">Minimax Profundidade 4 com poda Alpha-Beta — desafio garantido</span>
+                    <span class="mode-name">Treino contra IA <span class="badge badge-local">LOCAL</span></span>
+                    <span class="mode-desc">Minimax Profundidade 4 — desafio garantido</span>
+                </div>
+                <span class="mode-arrow">›</span>
+            </button>
+
+            <button class="mode-card" onclick="mudarTela('screenRanking'); carregarRanking('online');" style="--card-border: rgba(255,215,0,0.3); --card-glow: rgba(255,215,0,0.1); --icon-color: var(--gold-mid);">
+                <div class="mode-icon">🏆</div>
+                <div class="mode-text">
+                    <span class="mode-name">Ranking Global</span>
+                    <span class="mode-desc">Veja os melhores jogadores por patente e pontuação</span>
                 </div>
                 <span class="mode-arrow">›</span>
             </button>
@@ -176,30 +165,20 @@
                 </div>
                 <span class="mode-arrow">›</span>
             </button>
-
         </div>
-    </div><!-- /screenMenu -->
+    </div>
 
-
-    <!-- ==========================
-         TELA: LOBBY
-    ========================== -->
+    <!-- TELA: LOBBY (manual) -->
     <div id="screenLobby" class="screen">
-
         <div class="page-header">
-            <button class="btn-back" onclick="mudarTela('screenMenu')">
-                ‹ Voltar
-            </button>
+            <button class="btn-back" onclick="mudarTela('screenMenu')">‹ Voltar</button>
             <h2 class="page-title" id="lobbyTitle">Configurar Partida</h2>
         </div>
-
         <div class="config-panel">
-
             <div class="config-group">
                 <label class="config-label" for="gameId">ID da Sala</label>
-                <input type="text" id="gameId" class="config-input" value="sala_100" placeholder="ex: sala_001">
+                <input type="text" id="gameId" class="config-input" value="sala_100">
             </div>
-
             <div class="config-group">
                 <label class="config-label" for="playerColor">Sua Cor</label>
                 <div class="select-wrapper">
@@ -209,7 +188,6 @@
                     </select>
                 </div>
             </div>
-
             <div class="config-group">
                 <label class="config-label" for="rulesSelectLobby">Regras do Jogo</label>
                 <div class="select-wrapper">
@@ -219,122 +197,115 @@
                     </select>
                 </div>
             </div>
-
-            <button class="btn-primary" onclick="conectarServidor()">
-                ⚔ Entrar na Arena
-            </button>
-
+            <button class="btn-primary" onclick="conectarServidor()">⚔ Entrar na Arena</button>
         </div>
-    </div><!-- /screenLobby -->
+    </div>
 
-    <!-- ==========================
-         TELA: PERFIL
-    ========================== -->
+    <!-- TELA: PERFIL (com patentes) -->
     <div id="screenProfile" class="screen">
         <div class="page-header">
-            <button class="btn-back" onclick="mudarTela('screenMenu')">
-                ‹ Voltar
-            </button>
+            <button class="btn-back" onclick="mudarTela('screenMenu')">‹ Voltar</button>
             <h2 class="page-title">Configurações de Perfil</h2>
         </div>
-        
         <div class="config-panel" id="perfil-container">
-            <!-- Seção Superior: Foto + Bio -->
-            <div class="perfil-header" style="display: flex; gap: 20px; align-items: flex-start; margin-bottom: 20px;">
-                <!-- Seção da Foto -->
-                <div class="foto-upload">
-                    <img id="previewFoto" src="https://ui-avatars.com/api/?name=User&background=random" style="width: 120px; height: 120px; border-radius: 50%; border: 2px solid var(--gold-mid); object-fit: cover; display: block;">
-                    <input type="file" id="inputFoto" accept="image/*" onchange="previewImagem(event)" style="margin-top: 10px; width: 120px; font-size: 11px; color: var(--text-secondary);">
+            <!-- Bloco de patentes (adicional) -->
+            <div id="patentesContainer" style="display:flex; gap:16px; margin-bottom:20px; flex-wrap:wrap;">
+                <div class="patente-card">
+                    <div class="patente-icone" id="iconePatenteOnline">🥉</div>
+                    <div class="patente-label">Online</div>
+                    <div class="patente-nome" id="nomePatenteOnline">Bronze</div>
+                    <div class="patente-pontos" id="pontosPatenteOnline">0 pts</div>
                 </div>
-
-                <!-- Seção da Bio -->
-                <div class="config-group" style="flex-grow: 1; margin-bottom: 0;">
-                    <label class="config-label">Bio:</label>
-                    <textarea id="bio" class="config-input" style="width: 100%; height: 120px; resize: vertical;" placeholder="Conte algo sobre você..."></textarea>
+                <div class="patente-card">
+                    <div class="patente-icone" id="iconePatenteApostado">🥉</div>
+                    <div class="patente-label">Apostado</div>
+                    <div class="patente-nome" id="nomePatenteApostado">Bronze</div>
+                    <div class="patente-pontos" id="pontosPatenteApostado">0 pts</div>
                 </div>
             </div>
 
-            <button class="btn-primary btn-depositar" onclick="solicitarDeposito()" style="margin-top: 0;">
-                💰 Depositar
-            </button>
+            <div class="perfil-header" style="display: flex; gap: 20px; align-items: flex-start; margin-bottom: 20px;">
+                <div class="foto-upload">
+                    <img id="previewFoto" src="https://ui-avatars.com/api/?name=User&background=random" style="width: 120px; height: 120px; border-radius: 50%; border: 2px solid var(--gold-mid); object-fit: cover;">
+                    <input type="file" id="inputFoto" accept="image/*" onchange="previewImagem(event)" style="margin-top: 10px; width: 120px; font-size: 11px;">
+                </div>
+                <div class="config-group" style="flex-grow: 1; margin-bottom: 0;">
+                    <label class="config-label">Bio:</label>
+                    <textarea id="bio" class="config-input" style="width: 100%; height: 120px;" placeholder="Conte algo sobre você..."></textarea>
+                </div>
+            </div>
+
+            <button class="btn-primary btn-depositar" onclick="solicitarDeposito()" style="margin-top: 0;">💰 Depositar (PIX)</button>
 
             <div class="config-group">
                 <label class="config-label">Nick (Apelido):</label>
                 <input type="text" id="nick" class="config-input" placeholder="Seu apelido na arena">
             </div>
-
             <div class="config-group">
                 <label class="config-label">Data de Nascimento:</label>
                 <input type="date" id="dataNascimento" class="config-input">
             </div>
-
             <div class="config-group">
                 <label class="config-label">Telefone:</label>
                 <div style="display: flex; gap: 8px;">
                     <input type="text" id="telefone" class="config-input" placeholder="(00) 00000-0000">
-                    <button class="btn-back" style="flex-shrink: 0; white-space: nowrap;" onclick="togglePrivacy('telefone')">🔒 Público/Privado</button>
+                    <button class="btn-back" style="flex-shrink: 0;" onclick="togglePrivacy('telefone')">🔒 Público/Privado</button>
                 </div>
             </div>
-
             <div class="config-group">
                 <label class="config-label">CPF:</label>
                 <div style="display: flex; gap: 8px;">
                     <input type="text" id="cpf" class="config-input" placeholder="000.000.000-00">
-                    <button class="btn-back" style="flex-shrink: 0; white-space: nowrap;" onclick="togglePrivacy('cpf')">🔒 Público/Privado</button>
+                    <button class="btn-back" style="flex-shrink: 0;" onclick="togglePrivacy('cpf')">🔒 Público/Privado</button>
                 </div>
             </div>
-
             <button type="button" class="btn-primary" onclick="salvarPerfil(event)">Salvar Perfil</button>
 
-            <!-- Histórico de Jogos -->
             <div id="historico-container" style="margin-top: 30px;">
-                <h3 class="config-label" style="font-size: 14px; margin-bottom: 15px;">Seu Histórico de Jogos</h3>
-                <table style="width:100%; color: var(--text-primary); border-collapse: collapse; font-family: 'Crimson Text', serif; font-size: 15px;">
-                    <thead>
-                        <tr style="border-bottom: 1px solid var(--gold-dim); text-align: left;">
-                            <th style="padding: 10px;">Tipo</th>
-                            <th style="padding: 10px;">Resultado</th>
-                        </tr>
-                    </thead>
-                    <tbody id="tabela-historico">
-                        <!-- As linhas serão inseridas aqui via JS -->
-                    </tbody>
+                <h3 class="config-label" style="font-size: 14px;">Seu Histórico de Jogos</h3>
+                <table style="width:100%; color: var(--text-primary); border-collapse: collapse;">
+                    <thead><tr style="border-bottom: 1px solid var(--gold-dim);"><th style="padding: 10px;">Tipo</th><th style="padding: 10px;">Resultado</th></tr></thead>
+                    <tbody id="tabela-historico"></tbody>
                 </table>
             </div>
         </div>
     </div>
 
-    <!-- ==========================
-         TELA: LOBBY DE APOSTA (SALAS)
-    ========================== -->
+    <!-- TELA: LOBBY APOSTA (valores) -->
     <div id="screenLobbySalas" class="screen">
         <div class="page-header">
-            <button class="btn-back" onclick="mudarTela('screenMenu')">
-                ‹ Voltar
-            </button>
+            <button class="btn-back" onclick="mudarTela('screenMenu')">‹ Voltar</button>
             <h2 class="page-title">MESA APOSTADA</h2>
         </div>
         <div class="config-panel">
-            <div class="aposta-valores-grid" id="apostaValoresGrid">
-                <!-- Botões serão gerados via JS -->
-            </div>
+            <div class="aposta-valores-grid" id="apostaValoresGrid"></div>
             <div class="saldo-disponivel">
-                Saldo disponível: <strong id="apostaSaldoAtual">R$ 0,00</strong>
+                💰 Saldo (R$): <strong id="apostaSaldoReal">R$ 0,00</strong> &nbsp;|&nbsp; 🪙 Moedas: <strong id="apostaMoedasDisplay">0</strong>
             </div>
         </div>
     </div>
 
-    <!-- ==========================
-         TELA: JOGO
-    ========================== -->
+    <!-- TELA: RANKING GLOBAL -->
+    <div id="screenRanking" class="screen">
+        <div class="page-header">
+            <button class="btn-back" onclick="mudarTela('screenMenu')">‹ Voltar</button>
+            <h2 class="page-title">🏆 Ranking Global</h2>
+        </div>
+        <div class="config-panel">
+            <div id="rankingTabs" style="display:flex; gap:8px; margin-bottom:20px;">
+                <button class="btn-modal-primary" id="tabRankingOnline" onclick="carregarRanking('online')">⚡ Online</button>
+                <button class="btn-modal-secondary" id="tabRankingApostado" onclick="carregarRanking('apostado')">💰 Apostado</button>
+            </div>
+            <div id="rankingLista"><div class="chat-empty">Carregando ranking...</div></div>
+            <div id="rankingMinhaPos" style="margin-top:16px; color:var(--text-secondary); font-size:13px;"></div>
+        </div>
+    </div>
+
+    <!-- TELA: JOGO -->
     <div id="screenGame" class="screen">
         <div class="game-layout">
-
-            <!-- Top bar -->
             <div class="game-topbar">
-                <button class="btn-surrender" id="btn-surrender" onclick="confirmarAbandono()">
-                    🏳 Abandonar
-                </button>
+                <button class="btn-surrender" id="btn-surrender" onclick="confirmarAbandono()">🏳 Abandonar</button>
                 <div class="turn-panel">
                     <div class="turn-indicator white" id="turnIndicator"></div>
                     <span class="turn-text" id="status">Aguardando...</span>
@@ -342,26 +313,17 @@
                 <div style="width:100px;"></div>
             </div>
 
-            <!-- Peças capturadas -->
-            <div class="capture-bar" id="captureBar">
-                <div class="capture-side">
-                    <span class="capture-label">Cap.</span>
-                    <div class="capture-dots" id="capturedByWhite"></div>
-                </div>
-                <div class="capture-side" style="flex-direction:row-reverse;">
-                    <span class="capture-label">Cap.</span>
-                    <div class="capture-dots" id="capturedByBlack"></div>
-                </div>
+            <div class="capture-bar">
+                <div class="capture-side"><span class="capture-label">Cap.</span><div class="capture-dots" id="capturedByWhite"></div></div>
+                <div class="capture-side" style="flex-direction:row-reverse;"><span class="capture-label">Cap.</span><div class="capture-dots" id="capturedByBlack"></div></div>
             </div>
 
-            <!-- Tabuleiro com coordenadas -->
             <div class="board-container">
                 <div class="board-coords-letters" id="coordLetters"></div>
                 <div class="board-coords-numbers" id="coordNumbers"></div>
                 <div class="board" id="board"></div>
             </div>
 
-            <!-- Footer com regras -->
             <div class="game-footer">
                 <label for="rulesSelectGame">Regras:</label>
                 <select id="rulesSelectGame" onchange="mudarRegras(this.value)">
@@ -370,26 +332,21 @@
                 </select>
             </div>
 
-            <!-- Chat da partida -->
             <div class="chat-panel" id="chatPanel">
                 <div class="chat-header">
                     <span class="chat-icon">💬</span>
                     <span class="chat-title">Chat da Partida</span>
-                    <button class="chat-toggle" onclick="toggleChat()" title="Minimizar">−</button>
+                    <button class="chat-toggle" onclick="toggleChat()">−</button>
                 </div>
-                <div class="chat-messages" id="chatMessages">
-                    <div class="chat-empty">Nenhuma mensagem ainda. Diga olá!</div>
-                </div>
+                <div class="chat-messages" id="chatMessages"><div class="chat-empty">Nenhuma mensagem ainda. Diga olá!</div></div>
                 <div class="chat-input-row">
-                    <input type="text" id="chatInput" class="chat-input" placeholder="Digite uma mensagem..." maxlength="200" autocomplete="off">
+                    <input type="text" id="chatInput" class="chat-input" placeholder="Digite uma mensagem..." maxlength="200">
                     <button class="chat-send-btn" onclick="enviarMensagemChat()">➤</button>
                 </div>
             </div>
-
         </div>
-    </div><!-- /screenGame -->
-
-</div><!-- /app-wrapper -->
+    </div>
+</div>
 
 <script src="config.js"></script>
 <script src="script.js"></script>

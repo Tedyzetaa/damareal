@@ -51,10 +51,8 @@ sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
 def ensure_avatars_bucket():
     try:
         supabase.storage.get_bucket("avatars")
-        print("Bucket 'avatars' já existe.")
     except Exception:
         try:
-            print("Criando bucket 'avatars'...")
             supabase.storage.create_bucket("avatars", {"public": True})
         except Exception as e:
             print(f"Erro ao criar bucket: {e}")
@@ -67,7 +65,7 @@ async def lifespan(app: FastAPI):
 # ================================================================
 # APP + RATE LIMITER + CORS
 # ================================================================
-app = FastAPI(title="Damas Real - Server-Side Engine com IA", lifespan=lifespan)
+app = FastAPI(title="Damas Real - Server-Side Engine", lifespan=lifespan)
 
 origins = [
     "http://localhost:6500",
@@ -119,6 +117,40 @@ def verificar_token_google(token: str, google_id_esperado: str = None) -> dict:
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Token inválido: {str(e)}")
 
+def creditar_moedas(google_id: str, quantidade: int):
+    """Credita moedas ao jogador de forma segura."""
+    res = supabase.table("perfis").select("moedas").eq("google_id", google_id).execute()
+    atual = int(res.data[0]["moedas"] or 0) if res.data else 0
+    supabase.table("perfis").update({"moedas": atual + quantidade}).eq("google_id", google_id).execute()
+
+def calcular_patente(pontos: int) -> str:
+    if pontos >= 700: return "mestre"
+    if pontos >= 300: return "ouro"
+    if pontos >= 100: return "prata"
+    return "bronze"
+
+DELTA_PONTOS = {
+    "online":   {"vitoria": 15, "derrota": -8,  "empate": 2},
+    "apostado": {"vitoria": 20, "derrota": -10, "empate": 2},
+}
+
+def atualizar_pontos_e_patente(google_id: str, tipo: str, resultado: str):
+    if tipo not in DELTA_PONTOS:
+        return
+    delta = DELTA_PONTOS[tipo].get(resultado, 0)
+    col_pontos  = f"pontos_{tipo}"
+    col_patente = f"patente_{tipo}"
+    res = supabase.table("perfis").select(col_pontos).eq("google_id", google_id).execute()
+    if not res.data:
+        return
+    pontos_atuais = int(res.data[0].get(col_pontos) or 0)
+    novos_pontos  = max(0, pontos_atuais + delta)
+    nova_patente  = calcular_patente(novos_pontos)
+    supabase.table("perfis").update({
+        col_pontos:  novos_pontos,
+        col_patente: nova_patente
+    }).eq("google_id", google_id).execute()
+
 # ================================================================
 # MODELOS PYDANTIC
 # ================================================================
@@ -169,27 +201,15 @@ class CancelarFilaPayload(BaseModel):
 # NOVA FUNÇÃO: PROCESSAR FIM DE PARTIDA APOSTADA
 # ================================================================
 async def processar_fim_partida_aposta(sala_id: str, vencedor_id: str):
-    """
-    Finaliza a sala de aposta: credita o prêmio ao vencedor,
-    registra histórico para ambos e atualiza status.
-    Idempotente: se a sala já estiver finalizada, não faz nada.
-    """
     try:
-        # Buscar sala com todos os dados necessários
-        sala_resp = supabase.table("salas_aposta").select(
-            "status, valor_entrada, premio, jogador1_id, jogador2_id"
-        ).eq("id", sala_id).execute()
+        sala_resp = supabase.table("salas_aposta").select("status, valor_entrada, premio, jogador1_id, jogador2_id").eq("id", sala_id).execute()
         if not sala_resp.data:
-            print(f"[APOSTA] Sala {sala_id} não encontrada")
             return
         sala = sala_resp.data[0]
         if sala["status"] == "finalizada":
-            print(f"[APOSTA] Sala {sala_id} já finalizada, ignorando")
             return
         if sala["status"] != "em_jogo":
-            print(f"[APOSTA] Sala {sala_id} não está em jogo (status={sala['status']})")
             return
-
         valor_entrada = float(sala["valor_entrada"])
         premio = float(sala["premio"])
         jogador1 = sala["jogador1_id"]
@@ -202,59 +222,27 @@ async def processar_fim_partida_aposta(sala_id: str, vencedor_id: str):
                 try:
                     supabase.rpc("creditar_saldo", {"p_google_id": gid, "p_valor": valor_entrada}).execute()
                 except Exception:
-                    # Fallback: update direto
                     res_s = supabase.table("perfis").select("saldo").eq("google_id", gid).execute()
                     saldo_atual = float(res_s.data[0]["saldo"] or 0) if res_s.data else 0.0
                     supabase.table("perfis").update({"saldo": saldo_atual + valor_entrada}).eq("google_id", gid).execute()
-                    print(f"[APOSTA] Fallback direto: reembolso de R${valor_entrada} para {gid}")
-            # Registrar histórico de empate
-            for gid in [jogador1, jogador2]:
                 supabase.table("historico").insert({
-                    "partida_id": sala_id,
-                    "google_id": gid,
-                    "tipo": "aposta",
-                    "resultado": "empate",
-                    "valor": valor_entrada,
-                    "delta_saldo": 0
+                    "partida_id": sala_id, "google_id": gid, "tipo": "aposta", "resultado": "empate", "valor": valor_entrada, "delta_saldo": 0
                 }).execute()
         else:
-            # Vencedor real: credita prêmio
             try:
-                rpc_result = supabase.rpc("creditar_saldo", {"p_google_id": vencedor_id, "p_valor": premio}).execute()
-                if not rpc_result.data:
-                    raise ValueError("RPC retornou vazio")
-            except Exception as rpc_err:
-                print(f"[APOSTA] RPC creditar_saldo falhou ({rpc_err}), usando fallback direto")
+                supabase.rpc("creditar_saldo", {"p_google_id": vencedor_id, "p_valor": premio}).execute()
+            except Exception:
                 res_s = supabase.table("perfis").select("saldo").eq("google_id", vencedor_id).execute()
                 saldo_atual = float(res_s.data[0]["saldo"] or 0) if res_s.data else 0.0
                 supabase.table("perfis").update({"saldo": saldo_atual + premio}).eq("google_id", vencedor_id).execute()
-                print(f"[APOSTA] Fallback direto: creditado R${premio} para {vencedor_id}")
             perdedor_id = jogador2 if vencedor_id == jogador1 else jogador1
-            # Registrar vitória/derrota
             supabase.table("historico").insert({
-                "partida_id": sala_id,
-                "google_id": vencedor_id,
-                "tipo": "aposta",
-                "resultado": "vitoria",
-                "valor": valor_entrada,
-                "delta_saldo": premio
+                "partida_id": sala_id, "google_id": vencedor_id, "tipo": "aposta", "resultado": "vitoria", "valor": valor_entrada, "delta_saldo": premio
             }).execute()
             supabase.table("historico").insert({
-                "partida_id": sala_id,
-                "google_id": perdedor_id,
-                "tipo": "aposta",
-                "resultado": "derrota",
-                "valor": valor_entrada,
-                "delta_saldo": -valor_entrada
+                "partida_id": sala_id, "google_id": perdedor_id, "tipo": "aposta", "resultado": "derrota", "valor": valor_entrada, "delta_saldo": -valor_entrada
             }).execute()
-
-        # Atualizar status da sala para finalizada
-        supabase.table("salas_aposta").update({
-            "status": "finalizada",
-            "updated_at": datetime.utcnow().isoformat()
-        }).eq("id", sala_id).execute()
-        print(f"[APOSTA] Sala {sala_id} finalizada. Vencedor: {vencedor_id}")
-
+        supabase.table("salas_aposta").update({"status": "finalizada", "updated_at": datetime.utcnow().isoformat()}).eq("id", sala_id).execute()
     except Exception as e:
         print(f"[APOSTA] Erro ao finalizar sala {sala_id}: {e}")
 
@@ -562,20 +550,27 @@ async def auth_google(request: Request, payload: AuthToken):
             upsert_data["foto_url"] = picture_google
 
         supabase.table("perfis").upsert(upsert_data, on_conflict="google_id").execute()
-        res = supabase.table("perfis").select("nick, saldo, foto_url").eq("google_id", google_id).execute()
+        res = supabase.table("perfis").select("nick, saldo, moedas, foto_url, bonus_cadastro_concedido").eq("google_id", google_id).execute()
         row = res.data[0] if res.data else {}
+        # Bônus de cadastro
+        bonus_concedido = row.get("bonus_cadastro_concedido")
+        bonus_cadastro = False
+        if not bonus_concedido:
+            creditar_moedas(google_id, 1000)
+            supabase.table("perfis").update({"bonus_cadastro_concedido": True}).eq("google_id", google_id).execute()
+            bonus_cadastro = True
     except Exception as e:
-        print(f"[SUPABASE ERROR] auth_google: {e}")
         raise HTTPException(status_code=500, detail=f"Erro no banco de dados: {str(e)}")
 
     nick       = row.get("nick")
     saldo      = row.get("saldo") or 0.0
+    moedas     = int(row.get("moedas") or 0)
     foto_final = row.get("foto_url") or picture_google
 
     return {
         "status": "authenticated", "google_id": google_id,
         "email": email_google, "name": nome_google,
-        "nick": nick, "picture": foto_final, "saldo": round(saldo, 2),
+        "nick": nick, "picture": foto_final, "saldo": round(saldo, 2), "moedas": moedas, "bonus_cadastro": bonus_cadastro,
     }
 
 @app.post("/update-profile")
@@ -713,6 +708,11 @@ async def registrar_jogo(request: Request, payload: RegistrarJogoPayload):
     if delta != 0.0:
         supabase.table("perfis").update({"saldo": saldo_atual + delta}).eq("google_id", payload.googleId).execute()
 
+    # Atualizar pontos e patente (para online e apostado)
+    tipo_para_pontos = payload.tipo
+    if tipo_para_pontos in ('aposta', 'apostada'):
+        tipo_para_pontos = 'apostado'
+    atualizar_pontos_e_patente(payload.googleId, tipo_para_pontos, payload.resultado)
     return {
         "status":     "registered",
         "partida_id": partida_id,
@@ -831,6 +831,50 @@ async def obter_saldo(google_id: str):
     if not resp.data:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
     return {"saldo": float(resp.data[0].get("saldo") or 0.0)}
+
+@app.get("/api/moedas/{google_id}")
+async def obter_moedas(google_id: str):
+    resp = supabase.table("perfis").select("moedas").eq("google_id", google_id).execute()
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    return {"moedas": int(resp.data[0].get("moedas") or 0)}
+
+@app.post("/api/bonus/login-diario")
+@limiter.limit("5/minute")
+async def bonus_login_diario(request: Request, payload: AuthToken):
+    id_info = verificar_token_google(payload.token)
+    google_id = id_info['sub']
+    res = supabase.table("perfis").select("ultimo_bonus_diario, moedas").eq("google_id", google_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    row = res.data[0]
+    hoje = date.today().isoformat()
+    ultimo = row.get("ultimo_bonus_diario")
+    if ultimo:
+        ultimo_str = str(ultimo)[:10]
+    else:
+        ultimo_str = None
+    if ultimo_str == hoje:
+        return {"concedido": False, "mensagem": "Bônus já coletado hoje."}
+    creditar_moedas(google_id, 300)
+    supabase.table("perfis").update({"ultimo_bonus_diario": hoje}).eq("google_id", google_id).execute()
+    moedas_novas = int(row.get("moedas") or 0) + 300
+    return {"concedido": True, "moedas": moedas_novas}
+
+@app.get("/api/ranking/{modo}")
+async def obter_ranking(modo: str):
+    if modo not in ("online", "apostado"):
+        raise HTTPException(status_code=400, detail="Modo inválido. Use 'online' ou 'apostado'.")
+    col_pontos = f"pontos_{modo}"
+    col_patente = f"patente_{modo}"
+    resp = supabase.table("perfis").select(f"google_id, nick, nome, foto_url, {col_pontos}, {col_patente}").order(col_pontos, desc=True).limit(50).execute()
+    ranking = []
+    for i, row in enumerate(resp.data or []):
+        ranking.append({
+            "posicao": i+1, "google_id": row.get("google_id"), "nome": row.get("nick") or row.get("nome") or "Jogador",
+            "foto_url": row.get("foto_url") or "", "pontos": int(row.get(col_pontos) or 0), "patente": row.get(col_patente) or "bronze",
+        })
+    return {"modo": modo, "ranking": ranking}
 
 # ================================================================
 # ENDPOINTS DE APOSTA
@@ -1086,13 +1130,48 @@ async def websocket_lobby_endpoint(websocket: WebSocket, google_id: str = None):
             try:
                 msg  = await asyncio.wait_for(websocket.receive_text(), timeout=2.0)
                 data = json.loads(msg)
-                if data.get("type") == "cancel":
+                msg_type = data.get("type")
+                if msg_type == "cancel":
                     async with lobby_lock:
                         await remover_da_fila(google_id)
                         lobby_connections.pop(google_id, None)
                         match_info.pop(google_id, None)
                     await websocket.close(code=1000, reason="Cancelado")
                     return
+                elif msg_type == "invite_send":
+                    to_id = data.get("to_google_id")
+                    from_nick = data.get("from_nick", "Alguém")
+                    if to_id and to_id in lobby_connections:
+                        game_id = str(uuid.uuid4())
+                        color_from = "w"
+                        color_to = "b"
+                        await lobby_connections[to_id].send_text(json.dumps({
+                            "type": "invite_received", "from_google_id": google_id, "from_nick": from_nick,
+                            "game_id": game_id, "color": color_to
+                        }))
+                        match_info[google_id] = {"game_id": game_id, "color": color_from, "opponent": to_id}
+                        match_info[to_id] = {"game_id": game_id, "color": color_to, "opponent": google_id}
+                    else:
+                        await websocket.send_text(json.dumps({"type": "invite_error", "mensagem": "Jogador não está online no lobby."}))
+                elif msg_type == "invite_accept":
+                    from_id = data.get("from_google_id")
+                    info = match_info.get(google_id)
+                    if info and from_id in lobby_connections:
+                        game_id = info["game_id"]
+                        await lobby_connections[from_id].send_text(json.dumps({
+                            "type": "match_found", "game_id": game_id, "color": match_info[from_id]["color"]
+                        }))
+                        await websocket.send_text(json.dumps({
+                            "type": "match_found", "game_id": game_id, "color": info["color"]
+                        }))
+                elif msg_type == "invite_reject":
+                    from_id = data.get("from_google_id")
+                    if from_id and from_id in lobby_connections:
+                        await lobby_connections[from_id].send_text(json.dumps({
+                            "type": "invite_rejected", "mensagem": "O jogador recusou o convite."
+                        }))
+                    match_info.pop(google_id, None)
+                    match_info.pop(from_id, None)
             except asyncio.TimeoutError:
                 pass
 
