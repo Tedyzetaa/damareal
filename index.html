@@ -30,12 +30,15 @@
 <!-- Modal depósito valor (seleção) -->
 <div id="modalDepositoValor" class="modal-overlay" style="display: none;">
     <div class="modal-box">
-        <div class="modal-title">Depósito via Pix</div>
-        <div class="modal-subtitle">Digite o valor (mínimo R$ 1,00)</div>
+        <div class="modal-title">Comprar Moedas</div>
+        <div class="modal-subtitle">Digite o valor em Reais (R$)</div>
         <input type="number" id="depositoValorInput" class="config-input" step="1" min="1" placeholder="Ex: 10" style="text-align: center;">
+        <div id="infoConversao" style="margin-top: 10px; font-size: 12px; color: var(--text-secondary);">
+            💰 R$ 10,00 = 10.000 moedas
+        </div>
         <div class="modal-actions" style="margin-top: 20px;">
             <button class="btn-modal-secondary" onclick="fecharModalDepositoValor()">Cancelar</button>
-            <button class="btn-modal-primary" onclick="confirmarDeposito()">Continuar</button>
+            <button class="btn-modal-primary" onclick="confirmarCompraMoedas()">Continuar</button>
         </div>
     </div>
 </div>
@@ -57,10 +60,10 @@
     <div class="modal-box">
         <div class="modal-title">Confirmar Aposta</div>
         <div class="modal-subtitle" style="text-align: left;">
-            <div>Valor de entrada:   <strong id="confirmaValor">R$ 0,00</strong></div>
-            <div>Prêmio se vencer:   <strong id="confirmaPremio">R$ 0,00</strong></div>
-            <div>Taxa da mesa:       <strong id="confirmaTaxa">R$ 0,00</strong></div>
-            <div>Saldo após entrada: <strong id="confirmaSaldoFinal">R$ 0,00</strong></div>
+            <div>Valor de entrada:   <strong id="confirmaValor">0 moedas</strong></div>
+            <div>Prêmio se vencer:   <strong id="confirmaPremio">0 moedas</strong></div>
+            <div>Taxa da mesa:       <strong id="confirmaTaxa">0 moedas</strong></div>
+            <div>Saldo após entrada: <strong id="confirmaSaldoFinal">0 moedas</strong></div>
         </div>
         <div class="modal-actions">
             <button class="btn-modal-secondary" onclick="fecharModalConfirmarAposta()">Cancelar</button>
@@ -73,7 +76,7 @@
 <div id="modalAguardandoOponente" class="modal-overlay" style="display: none;">
     <div class="modal-box">
         <div class="modal-title">Aguardando oponente</div>
-        <div class="modal-subtitle">Valor: <span id="aguardandoValor">R$ 0,00</span></div>
+        <div class="modal-subtitle">Valor: <span id="aguardandoValor">0 moedas</span></div>
         <div class="spinner" style="margin: 16px auto;"></div>
         <div class="modal-actions">
             <button class="btn-modal-secondary" onclick="cancelarBuscaAposta()">Cancelar</button>
@@ -235,7 +238,7 @@
                 </div>
             </div>
 
-            <button class="btn-primary btn-depositar" onclick="solicitarDeposito()" style="margin-top: 0;">💰 Depositar (PIX)</button>
+            <button class="btn-primary btn-depositar" onclick="solicitarCompraMoedas()" style="margin-top: 0;">💰 Comprar Moedas</button>
 
             <div class="config-group">
                 <label class="config-label">Nick (Apelido):</label>
@@ -280,7 +283,7 @@
         <div class="config-panel">
             <div class="aposta-valores-grid" id="apostaValoresGrid"></div>
             <div class="saldo-disponivel">
-                💰 Saldo (R$): <strong id="apostaSaldoReal">R$ 0,00</strong> &nbsp;|&nbsp; 🪙 Moedas: <strong id="apostaMoedasDisplay">0</strong>
+                🪙 Moedas disponíveis: <strong id="apostaMoedasDisplay">0</strong>
             </div>
         </div>
     </div>
