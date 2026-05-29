@@ -5,7 +5,7 @@ let ws              = null;
 let selectedSquare  = null;
 let currentBoard    = [];
 let meuTurno        = false;
-let modoAtual       = '';         // 'ia' | 'online' | 'apostada' | 'searching'
+let modoAtual       = '';         // 'ia' | 'online' | 'apostada' | 'searching' | 'private_wait'
 let lastBoard       = null;
 let capturedByWhite = 0;
 let capturedByBlack = 0;
@@ -211,7 +211,6 @@ function adicionarMensagemChat(remetente, texto, isMe, timestamp) {
     const container = document.getElementById('chatMessages');
     if (!container) return;
 
-    // Tenta preencher a foto do oponente na primeira mensagem dele
     if (!isMe && !opponentPicture) {
         opponentPicture = `https://ui-avatars.com/api/?name=${encodeURIComponent(remetente)}&background=3a2210&color=c8963c&size=64`;
     }
@@ -219,7 +218,6 @@ function adicionarMensagemChat(remetente, texto, isMe, timestamp) {
     const emptyMsg = container.querySelector('.chat-empty');
     if (emptyMsg) emptyMsg.remove();
 
-    // Hora: prefere timestamp do servidor, fallback para relógio local
     let hora = timestamp || '';
     if (!hora) {
         const agora = new Date();
@@ -227,7 +225,6 @@ function adicionarMensagemChat(remetente, texto, isMe, timestamp) {
                agora.getMinutes().toString().padStart(2, '0');
     }
 
-    // Avatar
     const minhaFoto = userProfile.picture
         || document.getElementById('userPicture')?.src
         || '';
@@ -237,7 +234,6 @@ function adicionarMensagemChat(remetente, texto, isMe, timestamp) {
 
     const avatarSrc = isMe ? minhaFoto : fotoOponente;
 
-    // Estrutura: [avatar] [wrapper] ou [wrapper] [avatar]
     const row = document.createElement('div');
     row.className = `chat-row ${isMe ? 'chat-row--me' : 'chat-row--opponent'}`;
 
@@ -279,7 +275,6 @@ function adicionarMensagemChat(remetente, texto, isMe, timestamp) {
     container.scrollTop = container.scrollHeight;
 }
 
-// Função auxiliar para escapar HTML (evitar XSS)
 function escapeHtml(str) {
     if (!str) return '';
     return str
@@ -338,7 +333,7 @@ function renderCaptureDots() {
 }
 
 // ============================================================
-// STATUS / INDICADOR (corrigido)
+// STATUS / INDICADOR
 // ============================================================
 function atualizarStatus(turno, ehMeuTurno, modo) {
     const ind  = document.getElementById('turnIndicator');
@@ -356,14 +351,13 @@ function atualizarStatus(turno, ehMeuTurno, modo) {
 }
 
 // ============================================================
-// WEBSOCKET — MENSAGENS DO SERVIDOR (captura corrigida)
+// WEBSOCKET — MENSAGENS DO SERVIDOR
 // ============================================================
 function onMensagemServidor(data, minhaCor) {
     if (data.type === 'init' || data.type === 'update') {
         const sel = document.getElementById('rulesSelectGame');
         if (sel) sel.value = data.regras;
 
-        // Guarda o board antigo antes de atualizar
         const oldBoard = currentBoard.length ? currentBoard.map(row => [...row]) : null;
         currentBoard = data.board;
         if (oldBoard) {
@@ -373,6 +367,16 @@ function onMensagemServidor(data, minhaCor) {
         meuTurno = (data.turn === minhaCor);
         renderBoard();
         atualizarStatus(data.turn, meuTurno, modoAtual);
+
+        // Se estávamos em modo private_wait e a partida começou, muda para online e restaura botão
+        if (modoAtual === 'private_wait') {
+            modoAtual = 'online';
+            const btnAbandono = document.getElementById('btn-surrender');
+            if (btnAbandono) {
+                btnAbandono.textContent = '🏳 Abandonar';
+                btnAbandono.onclick = confirmarAbandono;
+            }
+        }
 
         if (data.alerta) showToast(data.alerta, 'info');
         if (data.must_continue) {
@@ -444,7 +448,6 @@ function jogarContraIA() {
         mudarTela('screenGame');
         renderizarCoordenadas();
         renderCaptureDots();
-        // Restaura botão de abandono
         const btnAbandono = document.getElementById('btn-surrender');
         if (btnAbandono) {
             btnAbandono.textContent = '🏳 Abandonar';
@@ -540,7 +543,9 @@ function conectarPartidaOnline(gameId, minhaCor) {
     partidaIdAtual    = null;
     partidaRegistrada = false;
     minhaCorAtual     = minhaCor;
-    modoAtual         = 'online';
+    if (modoAtual !== 'private_wait') {
+        modoAtual = 'online';
+    }
     limparChat();
 
     if (ws) ws.close();
@@ -549,12 +554,23 @@ function conectarPartidaOnline(gameId, minhaCor) {
     ws = new WebSocket(`${wsProtocol}://${API.split('://')[1]}/ws/partida/${gameId}/${minhaCor}`);
 
     ws.onopen = () => {
+        mudarTela('screenGame');
         renderizarCoordenadas();
         renderCaptureDots();
         const btnAbandono = document.getElementById('btn-surrender');
         if (btnAbandono) {
-            btnAbandono.textContent = '🏳 Abandonar';
-            btnAbandono.onclick = confirmarAbandono;
+            if (modoAtual === 'private_wait') {
+                btnAbandono.textContent = 'Cancelar';
+                btnAbandono.onclick = () => {
+                    if (ws) ws.close(1000, 'Cancelado');
+                    modoAtual = '';
+                    mudarTela('screenMenu');
+                };
+                document.getElementById('status').textContent = 'Aguardando amigo entrar...';
+            } else {
+                btnAbandono.textContent = '🏳 Abandonar';
+                btnAbandono.onclick = confirmarAbandono;
+            }
         }
 
         const chatInput = document.getElementById('chatInput');
@@ -570,9 +586,87 @@ function conectarPartidaOnline(gameId, minhaCor) {
         if (event.code !== 1000) {
             showToast("Conexão com a partida perdida.", "error");
             mudarTela('screenMenu');
+        } else if (modoAtual === 'private_wait') {
+            modoAtual = '';
+            mudarTela('screenMenu');
         }
     };
     ws.onerror = () => showToast("Falha ao conectar à partida.", "error");
+}
+
+// ============================================================
+// PARTIDA PRIVADA COM LINK
+// ============================================================
+function gerarLinkSalaPrivada() {
+    if (!userProfile.googleId) {
+        showToast("Faça login antes de criar uma sala privada.", "error");
+        return;
+    }
+    // Gera um ID único (ex: priv_abc123)
+    const gameId = 'priv_' + Math.random().toString(36).substring(2, 10);
+    const inviteUrl = `${window.location.origin}${window.location.pathname}?invite=${gameId}`;
+    
+    // Copia para área de transferência
+    navigator.clipboard.writeText(inviteUrl).then(() => {
+        showToast("Link copiado com sucesso! Compartilhe com seu amigo.", "success", 4000);
+    }).catch(() => {
+        showToast("Não foi possível copiar o link. Copie manualmente: " + inviteUrl, "info", 6000);
+    });
+
+    // Inicia a partida como criador (brancas)
+    iniciarPartidaPrivada(gameId);
+}
+
+function iniciarPartidaPrivada(gameId) {
+    modoAtual = 'private_wait';
+    conectarPartidaOnline(gameId, 'w');
+}
+
+// ============================================================
+// INTERCEPTAÇÃO DE CONVITE NA URL
+// ============================================================
+function checkForInvite() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const inviteId = urlParams.get('invite');
+    if (!inviteId) return;
+
+    // Remove o parâmetro da URL (sem recarregar a página)
+    const newUrl = window.location.origin + window.location.pathname;
+    window.history.replaceState({}, document.title, newUrl);
+
+    // Cria modal de convite se não existir
+    let modal = document.getElementById('modalInvite');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'modalInvite';
+        modal.className = 'modal-overlay';
+        modal.innerHTML = `
+            <div class="modal-box">
+                <div class="modal-trophy">🔗</div>
+                <div class="modal-title">Convite para Partida</div>
+                <div class="modal-subtitle" id="inviteMessage">Você foi convidado para uma partida privada!</div>
+                <div class="modal-actions">
+                    <button class="btn-modal-secondary" id="btnInviteCancel">Cancelar</button>
+                    <button class="btn-modal-primary" id="btnInviteAccept">Entrar na Sala</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        document.getElementById('btnInviteCancel').onclick = () => {
+            modal.style.display = 'none';
+            mudarTela('screenMenu');
+        };
+        document.getElementById('btnInviteAccept').onclick = () => {
+            modal.style.display = 'none';
+            if (userProfile.googleId) {
+                conectarPartidaOnline(inviteId, 'b');
+            } else {
+                showToast("Você precisa fazer login para aceitar o convite.", "error", 5000);
+                mudarTela('screenMenu');
+            }
+        };
+    }
+    modal.style.display = 'flex';
 }
 
 // ============================================================
@@ -668,14 +762,12 @@ async function verificarEExibirBonusDiario() {
         if (!res.ok) return;
         const data = await res.json();
         if (data.disponivel) {
-            // Exibir modal de resgate manual
             exibirModalBonusDiario();
         }
     } catch (e) { console.warn('Erro ao verificar bônus diário:', e); }
 }
 
 function exibirModalBonusDiario() {
-    // Criar modal se não existir
     let modal = document.getElementById('modalBonusDiario');
     if (!modal) {
         modal = document.createElement('div');
@@ -718,7 +810,7 @@ async function resgatarBonusDiario() {
         if (res.ok && data.resgatado) {
             userMoedas = data.moedas;
             atualizarMoedasUI(userMoedas);
-            showToast(' Bônus resgatado! +300 moedas!', 'success', 4000);
+            showToast('🎉 Bônus resgatado! +300 moedas!', 'success', 4000);
         } else {
             showToast('Erro ao resgatar bônus.', 'error');
         }
@@ -726,6 +818,7 @@ async function resgatarBonusDiario() {
         showToast('Erro de conexão.', 'error');
     }
 }
+
 // ============================================================
 // RANKING
 // ============================================================
@@ -787,7 +880,7 @@ function renderRanking(lista, modo) {
 }
 
 // ============================================================
-// CONVITE PERSONALIZADO
+// CONVITE PERSONALIZADO (via WebSocket)
 // ============================================================
 let lobbyWsConvite = null;
 
@@ -872,8 +965,7 @@ function confirmarAbandono() {
         return;
     }
     const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay open'; // type: ignore
-    // Bug 3: Adicionar aviso financeiro no modal de abandono para apostas
+    overlay.className = 'modal-overlay open';
     const msgFinanceira = modoAtual === 'aposta' && window.apostaInfo
         ? `\n\n⚠️ Você perderá R$ ${window.apostaInfo.valor.toFixed(2)} da aposta!` : '';
     overlay.innerHTML = `
@@ -892,6 +984,9 @@ function confirmarAbandono() {
 function abandonarPartida() {
     document.querySelectorAll('.modal-overlay').forEach(m => m.remove());
     if (ws) ws.close(1000, 'Abandono voluntário');
+    if (modoAtual === 'private_wait') {
+        modoAtual = '';
+    }
     mudarTela('screenMenu');
 }
 
@@ -909,7 +1004,6 @@ function abrirModalFimJogo(winner, minhaCor) {
     if (modoAtual === 'aposta' && window.apostaInfo) {
         const { valor, premio } = window.apostaInfo;
         if (winner === minhaCor) {
-            // Bug 7: Corrigido para 10% de taxa (1.8x prêmio)
             resultadoFinanceiro = `<br>💰 +R$ ${premio.toFixed(2)} creditado no seu saldo`;
         } else if (winner === 'empate') {
             resultadoFinanceiro = `<br>🔄 Aposta devolvida — R$ ${valor.toFixed(2)}`;
@@ -952,10 +1046,8 @@ function abrirModalFimJogo(winner, minhaCor) {
     }
 
     document.getElementById('modalFimJogo').classList.add('open');
-    // Bug 8: Registrar jogo com valor correto para apostas
     if (modoAtual === 'aposta' && window.apostaInfo) {
-        registrarJogoNoServidor(resultado, window.apostaInfo.valor); // valorAposta é em moedas
-        // Melhoria 1: Atualizar saldo imediatamente após partida apostada
+        registrarJogoNoServidor(resultado, window.apostaInfo.valor);
         setTimeout(() => buscarSaldoAtualizado(), 1500);
     } else {
         registrarJogoNoServidor(resultado, 0);
@@ -971,13 +1063,14 @@ function fecharModal() {
 // ============================================================
 async function registrarJogoNoServidor(resultado, valorAposta = 0) {
     if (!userProfile.googleId) return;
-    if (partidaRegistrada) return; // valorAposta agora é em moedas
+    if (partidaRegistrada) return;
     partidaRegistrada = true;
 
     const credential = localStorage.getItem('dr_credential');
     let tipoEnvio = modoAtual || 'online';
     if (tipoEnvio === 'apostada')  tipoEnvio = 'aposta';
     if (tipoEnvio === 'searching') tipoEnvio = 'online';
+    if (tipoEnvio === 'private_wait') tipoEnvio = 'online';
 
     const payload = {
         googleId:   userProfile.googleId,
@@ -1046,7 +1139,6 @@ async function buscarSaldoAtualizado() {
 function iniciarPollingSaldo() {
     if (saldoInterval) clearInterval(saldoInterval);
     saldoInterval = setInterval(() => {
-        // Atualiza se estiver logado e na tela de perfil ou menu
         if (userProfile.googleId) {
             buscarSaldoAtualizado();
         }
@@ -1061,7 +1153,6 @@ async function solicitarCompraMoedas() {
     const input = document.getElementById('depositoValorInput');
     input.value = '';
     modal.style.display = 'flex';
-    // Adicionar texto explicativo
     const infoDiv = document.getElementById('infoConversao');
     if (!infoDiv) {
         const info = document.createElement('div');
@@ -1075,7 +1166,6 @@ async function solicitarCompraMoedas() {
         infoDiv.style.display = 'block';
     }
 }
-
 
 function fecharModalDepositoValor() {
     document.getElementById('modalDepositoValor').style.display = 'none';
@@ -1105,7 +1195,7 @@ async function confirmarDeposito() {
                 "Content-Type": "application/json",
                 ...(credential ? { "Authorization": `Bearer ${credential}` } : {})
             },
-            body: JSON.stringify({ googleId: userProfile.googleId, valor, tipo: "compra_moedas" }) // Alterado para compra de moedas
+            body: JSON.stringify({ googleId: userProfile.googleId, valor, tipo: "compra_moedas" })
         });
         const data = await res.json();
         if (res.ok) {
@@ -1153,7 +1243,7 @@ async function handleCredentialResponse(response) {
     await processarLogin(response.credential);
 }
 
-async function processarLogin(token) { // Sem bônus automático
+async function processarLogin(token) {
     try {
         const res = await fetch(`${API}/auth/google`, {
             method:  'POST',
@@ -1190,7 +1280,7 @@ async function processarLogin(token) { // Sem bônus automático
         showToast(`Bem-vindo, ${nomeExibido}!`, 'success');
         await carregarPerfilDoServidor(userData.google_id);
         iniciarPollingSaldo();
-        verificarBonusDiario();
+        verificarEExibirBonusDiario();
         conectarLobbyParaConvites();
     } catch (err) {
         console.error("Erro no processamento do login:", err);
@@ -1202,7 +1292,7 @@ async function processarLogin(token) { // Sem bônus automático
 // ============================================================
 // CARREGAR PERFIL DO SERVIDOR
 // ============================================================
-async function carregarPerfilDoServidor(googleId) { // Com ajuste para patentes e moedas
+async function carregarPerfilDoServidor(googleId) {
     if (!googleId) return;
     try {
         const res = await fetch(`${API}/get-profile/${googleId}`);
@@ -1228,7 +1318,6 @@ async function carregarPerfilDoServidor(googleId) { // Com ajuste para patentes 
         }
         userMoedas = data.moedas || 0;
         atualizarMoedasUI(userMoedas);
-        // patentes
         const patenteIcones = { bronze: '🥉', prata: '🥈', ouro: '🥇', mestre: '👑' };
         const patenteNomes = { bronze: 'Bronze', prata: 'Prata', ouro: 'Ouro', mestre: 'Mestre' };
         const pOnline = data.patente_online || 'bronze';
@@ -1259,7 +1348,7 @@ function executarLogout() {
     google.accounts.id.disableAutoSelect();
     localStorage.removeItem('dr_credential');
     userProfile = {
-        googleId: null, nick: "", bio: "", telefone: "", cpf: "", dataNascimento: "", // Com patentes
+        googleId: null, nick: "", bio: "", telefone: "", cpf: "", dataNascimento: "",
         privacidade: { telefone: false, cpf: false }, patenteOnline: "bronze", patenteApostado: "bronze", pontosOnline: 0, pontosApostado: 0
     };
     historicoJogos = [];
@@ -1402,6 +1491,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     healthCheck();
     iniciarKeepalive();
+    checkForInvite(); // Verifica se há convite na URL
+
+    // Associa o botão de criar link privado
+    const btnPrivate = document.getElementById('btnPrivateLink');
+    if (btnPrivate) {
+        btnPrivate.onclick = gerarLinkSalaPrivada;
+    }
 });
 
 async function verificarLoginPersistente() {
@@ -1449,7 +1545,7 @@ function atualizarSaldoNaTelaAposta() {
 
 function abrirModalConfirmarAposta(valor, premio) {
     apostaValorSelecionado = valor;
-    const taxa = valor * 0.2; // 10% do pote (entrada *2 *0.10 = entrada*0.2)
+    const taxa = valor * 0.2;
     const saldoFinal = userSaldo - valor;
     document.getElementById('confirmaValor').textContent = `R$ ${valor.toFixed(2)}`;
     document.getElementById('confirmaPremio').textContent = `R$ ${premio.toFixed(2)}`;
@@ -1502,8 +1598,7 @@ async function entrarFilaAposta(valor) {
 
 function iniciarPollingAposta(salaId, valor) {
     if (apostaPollingInterval) clearInterval(apostaPollingInterval);
-    // Bug 10: Adicionar timeout máximo e tratamento de sala cancelada
-    const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos
+    const TIMEOUT_MS = 5 * 60 * 1000;
     const inicioPolling = Date.now();
 
     apostaPollingInterval = setInterval(async () => {
@@ -1511,7 +1606,7 @@ function iniciarPollingAposta(salaId, valor) {
             if (Date.now() - inicioPolling > TIMEOUT_MS) {
                 clearInterval(apostaPollingInterval);
                 showToast("Tempo esgotado. Nenhum adversário encontrado.", "error");
-                cancelarBuscaAposta(); // Chama a função para cancelar no backend e fechar modal
+                cancelarBuscaAposta();
                 return;
             }
             const res = await fetch(`${API}/api/aposta/status/${salaId}`);
@@ -1522,7 +1617,7 @@ function iniciarPollingAposta(salaId, valor) {
                     ? data.cor_jogador1
                     : data.cor_jogador2;
                 document.getElementById('modalAguardandoOponente').style.display = 'none';
-                conectarPartidaAposta(data.game_id, salaId, valor, data.premio, minhaCor); // type: ignore
+                conectarPartidaAposta(data.game_id, salaId, valor, data.premio, minhaCor);
             } else if (data.status === 'cancelada') {
                 clearInterval(apostaPollingInterval);
                 document.getElementById('modalAguardandoOponente').style.display = 'none';
@@ -1589,10 +1684,9 @@ function conectarPartidaAposta(gameId, salaId, valorEntrada, premio, minhaCor) {
         banner.innerHTML = `🪙 APOSTA: ${valorEntrada} moedas → Prêmio: ${premio} moedas`;
         banner.style.display = 'block';
     };
-    ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), minhaCorAtual); // type: ignore
+    ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), minhaCorAtual);
     ws.onclose = () => {
         if (modoAtual === 'aposta') {
-            // Bug 9: Verificar se o modal de fim de jogo está aberto antes de redirecionar
             const modalAberto = document.getElementById('modalFimJogo')?.classList.contains('open');
             if (!modalAberto) {
                 showToast("Partida encerrada.", "info");

@@ -151,6 +151,16 @@
                 <span class="mode-arrow">›</span>
             </button>
 
+            <!-- NOVO BOTÃO: PARTIDA PRIVADA COM LINK -->
+            <button class="mode-card" id="btnPrivateLink" style="--card-border: rgba(200,150,60,0.4); --icon-color: var(--gold-mid);">
+                <div class="mode-icon">🔗</div>
+                <div class="mode-text">
+                    <span class="mode-name">Partida Privada com Link</span>
+                    <span class="mode-desc">Crie um link e convide um amigo para uma partida</span>
+                </div>
+                <span class="mode-arrow">›</span>
+            </button>
+
             <button class="mode-card" onclick="mudarTela('screenRanking'); carregarRanking('online');" style="--card-border: rgba(255,215,0,0.3); --card-glow: rgba(255,215,0,0.1); --icon-color: var(--gold-mid);">
                 <div class="mode-icon">🏆</div>
                 <div class="mode-text">
@@ -267,7 +277,7 @@
             <div id="historico-container" style="margin-top: 30px;">
                 <h3 class="config-label" style="font-size: 14px;">Seu Histórico de Jogos</h3>
                 <table style="width:100%; color: var(--text-primary); border-collapse: collapse;">
-                    <thead><tr style="border-bottom: 1px solid var(--gold-dim);"><th style="padding: 10px;">Tipo</th><th style="padding: 10px;">Resultado</th></tr></thead>
+                    <thead><tr style="border-bottom: 1px solid var(--gold-dim);"><th style="padding: 10px;">Tipo</th><th style="padding: 10px;">Resultado</th></td></thead>
                     <tbody id="tabela-historico"></tbody>
                 </table>
             </div>
