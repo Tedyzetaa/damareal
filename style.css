@@ -26,6 +26,7 @@
     --accent-red:     #e05555;
     --accent-purple:  #9b6dff;
 
+    /* Cores de peças (agora utilizadas) */
     --piece-white-top: #f5f0e8;
     --piece-white-bot: #c8bfa0;
     --piece-black-top: #2a2a2a;
@@ -660,7 +661,7 @@ body::before {
 
 /* Peça branca */
 .piece.w {
-    background: radial-gradient(circle at 35% 30%, #fff8f0, #d4c090 60%, #b09060);
+    background: radial-gradient(circle at 35% 30%, var(--piece-white-top), var(--piece-white-bot) 60%, #b09060);
     border: 2px solid #a08050;
     box-shadow:
         0 4px 8px rgba(0,0,0,0.5),
@@ -670,7 +671,7 @@ body::before {
 
 /* Peça preta */
 .piece.b {
-    background: radial-gradient(circle at 35% 30%, #4a4a4a, #1a1a1a 60%, #080808);
+    background: radial-gradient(circle at 35% 30%, var(--piece-black-top), var(--piece-black-bot) 60%, #080808);
     border: 2px solid #333;
     box-shadow:
         0 4px 8px rgba(0,0,0,0.7),
@@ -680,7 +681,7 @@ body::before {
 
 /* Dama branca */
 .piece.W {
-    background: radial-gradient(circle at 35% 30%, #fff8f0, #d4c090 60%, #b09060);
+    background: radial-gradient(circle at 35% 30%, var(--piece-white-top), var(--piece-white-bot) 60%, #b09060);
     border: 3px solid var(--gold-bright);
     box-shadow:
         0 4px 8px rgba(0,0,0,0.5),
@@ -690,7 +691,7 @@ body::before {
 
 /* Dama preta */
 .piece.B {
-    background: radial-gradient(circle at 35% 30%, #4a4a4a, #1a1a1a 60%, #080808);
+    background: radial-gradient(circle at 35% 30%, var(--piece-black-top), var(--piece-black-bot) 60%, #080808);
     border: 3px solid var(--gold-bright);
     box-shadow:
         0 4px 8px rgba(0,0,0,0.7),
@@ -1356,6 +1357,7 @@ body::before {
     --accent-red:     #e05555;
     --accent-purple:  #9b6dff;
     --piece-white-top: #f5f0e8;
+    /* Cores de peças (agora utilizadas) */
     --piece-white-bot: #c8bfa0;
     --piece-black-top: #2a2a2a;
     --piece-black-bot: #111111;
@@ -1476,12 +1478,13 @@ body::before {
 .square.highlight-move { background-color: rgba(74,158,255,0.35) !important; }
 .square.selected-sq { background-color: rgba(200,150,60,0.35) !important; }
 
+/* Peças usando variáveis */
 .piece { width: 46px; height: 46px; border-radius: 50%; cursor: grab; transition: transform 0.15s cubic-bezier(0.22,1,0.36,1), box-shadow 0.15s; position: relative; z-index: 2; flex-shrink: 0; }
 .piece:active { cursor: grabbing; }
-.piece.w { background: radial-gradient(circle at 35% 30%, #fff8f0, #d4c090 60%, #b09060); border: 2px solid #a08050; box-shadow: 0 4px 8px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.6) inset, 0 -2px 4px rgba(0,0,0,0.3) inset; }
-.piece.b { background: radial-gradient(circle at 35% 30%, #4a4a4a, #1a1a1a 60%, #080808); border: 2px solid #333; box-shadow: 0 4px 8px rgba(0,0,0,0.7), 0 1px 0 rgba(100,100,100,0.3) inset, 0 -2px 4px rgba(0,0,0,0.5) inset; }
-.piece.W { background: radial-gradient(circle at 35% 30%, #fff8f0, #d4c090 60%, #b09060); border: 3px solid var(--gold-bright); box-shadow: 0 4px 8px rgba(0,0,0,0.5), 0 0 12px rgba(200,150,60,0.6), 0 1px 0 rgba(255,255,255,0.6) inset; }
-.piece.B { background: radial-gradient(circle at 35% 30%, #4a4a4a, #1a1a1a 60%, #080808); border: 3px solid var(--gold-bright); box-shadow: 0 4px 8px rgba(0,0,0,0.7), 0 0 12px rgba(200,150,60,0.5), 0 1px 0 rgba(100,100,100,0.3) inset; }
+.piece.w { background: radial-gradient(circle at 35% 30%, var(--piece-white-top), var(--piece-white-bot) 60%, #b09060); border: 2px solid #a08050; box-shadow: 0 4px 8px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.6) inset, 0 -2px 4px rgba(0,0,0,0.3) inset; }
+.piece.b { background: radial-gradient(circle at 35% 30%, var(--piece-black-top), var(--piece-black-bot) 60%, #080808); border: 2px solid #333; box-shadow: 0 4px 8px rgba(0,0,0,0.7), 0 1px 0 rgba(100,100,100,0.3) inset, 0 -2px 4px rgba(0,0,0,0.5) inset; }
+.piece.W { background: radial-gradient(circle at 35% 30%, var(--piece-white-top), var(--piece-white-bot) 60%, #b09060); border: 3px solid var(--gold-bright); box-shadow: 0 4px 8px rgba(0,0,0,0.5), 0 0 12px rgba(200,150,60,0.6), 0 1px 0 rgba(255,255,255,0.6) inset; }
+.piece.B { background: radial-gradient(circle at 35% 30%, var(--piece-black-top), var(--piece-black-bot) 60%, #080808); border: 3px solid var(--gold-bright); box-shadow: 0 4px 8px rgba(0,0,0,0.7), 0 0 12px rgba(200,150,60,0.5), 0 1px 0 rgba(100,100,100,0.3) inset; }
 .piece.W::after, .piece.B::after { content: '♛'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 20px; color: var(--gold-bright); text-shadow: 0 0 6px rgba(200,150,60,0.8); line-height: 1; }
 .piece.selected-piece { transform: scale(1.12) translateY(-3px) !important; box-shadow: 0 8px 20px rgba(0,0,0,0.7), 0 0 0 3px var(--gold-bright), 0 0 20px rgba(200,150,60,0.4) !important; z-index: 10; }
 @keyframes piecePlace { 0% { transform: scale(0.7) translateY(-8px); opacity: 0.7; } 60% { transform: scale(1.05) translateY(1px); } 100% { transform: scale(1) translateY(0); opacity: 1; } }

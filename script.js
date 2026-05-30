@@ -1702,6 +1702,13 @@ function iniciarPollingAposta(salaId, valor) {
     const inicioPolling = Date.now();
 
     apostaPollingInterval = setInterval(async () => {
+        const decorrido = Date.now() - inicioPolling;
+        const restante = Math.max(0, TIMEOUT_MS - decorrido);
+        const minutos = Math.floor(restante / 60000);
+        const segundos = Math.floor((restante % 60000) / 1000);
+        const display = document.getElementById('tempoRestante');
+        if (display) display.textContent = `${minutos}:${segundos.toString().padStart(2, '0')}`;
+
         try {
             if (Date.now() - inicioPolling > TIMEOUT_MS) {
                 clearInterval(apostaPollingInterval);
@@ -1724,7 +1731,7 @@ function iniciarPollingAposta(salaId, valor) {
                 showToast("Sala cancelada.", "error");
             }
         } catch (e) {}
-    }, 2000);
+    }, 1000);
 }
 
 async function cancelarBuscaAposta() {
