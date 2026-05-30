@@ -426,10 +426,29 @@ function onMensagemServidor(data, minhaCor) {
 // ============================================================
 // JOGAR CONTRA IA — COR ALEATÓRIA
 // ============================================================
-function jogarContraIA() {
+let dificuldadeIA = 'medio';
+
+function abrirModalDificuldade() {
+    const modal = document.getElementById('modalDificuldade');
+    if (modal) modal.style.display = 'flex';
+}
+
+function fecharModalDificuldade() {
+    const modal = document.getElementById('modalDificuldade');
+    if (modal) modal.style.display = 'none';
+}
+
+function escolherDificuldadeIA(nivel) {
+    dificuldadeIA = nivel;
+    fecharModalDificuldade();
+    jogarContraIA(nivel);
+}
+
+function jogarContraIA(dificuldadeEscolhida) {
     const corAleatoria = Math.random() < 0.5 ? 'w' : 'b';
     const corNome      = corAleatoria === 'w' ? 'Brancas' : 'Pretas';
-    const dificuldade  = document.getElementById('iaDifficulty')?.value || 'medio';
+    const dificuldade  = dificuldadeEscolhida || dificuldadeIA;
+    
     let profundidade   = 4; // médio
     if (dificuldade === 'facil') profundidade = 2;
     else if (dificuldade === 'dificil') profundidade = 6;

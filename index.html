@@ -143,18 +143,11 @@
                 <span class="mode-arrow">›</span>
             </button>
 
-            <button class="mode-card ia" onclick="jogarContraIA()">
+            <button class="mode-card ia" onclick="abrirModalDificuldade()">
                 <div class="mode-icon">🤖</div>
                 <div class="mode-text">
                     <span class="mode-name">Treino contra IA <span class="badge badge-local">LOCAL</span></span>
-                    <span class="mode-desc">Minimax Profundidade ajustável</span>
-                </div>
-                <div class="difficulty-selector" style="margin-left: auto; margin-right: 10px;" onclick="event.stopPropagation()">
-                    <select id="iaDifficulty" class="config-select" style="width: 100px; padding: 4px;">
-                        <option value="facil">Fácil</option>
-                        <option value="medio" selected>Médio</option>
-                        <option value="dificil">Difícil</option>
-                    </select>
+                    <span class="mode-desc">Escolha o nível e treine suas táticas</span>
                 </div>
                 <span class="mode-arrow">›</span>
             </button>
@@ -365,6 +358,22 @@
                     <button class="chat-send-btn" onclick="enviarMensagemChat()">➤</button>
                 </div>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- MODAL DE SELEÇÃO DE DIFICULDADE IA -->
+<div id="modalDificuldade" class="modal-overlay" style="display: none;">
+    <div class="modal-box">
+        <div class="modal-trophy">🤖</div>
+        <div class="modal-title">Nível da IA</div>
+        <div class="modal-subtitle">Escolha o nível de dificuldade do oponente</div>
+        
+        <div class="modal-actions" style="flex-direction: column; gap: 12px; margin-top: 20px;">
+            <button class="btn-modal-primary" style="width: 100%;" onclick="escolherDificuldadeIA('facil')">🌟 Fácil</button>
+            <button class="btn-modal-primary" style="width: 100%; background: var(--accent-blue); border-color: var(--accent-blue);" onclick="escolherDificuldadeIA('medio')">🔥 Médio</button>
+            <button class="btn-modal-primary" style="width: 100%; background: var(--accent-red); border-color: var(--accent-red);" onclick="escolherDificuldadeIA('dificil')">💀 Difícil</button>
+            <button class="btn-modal-secondary" style="width: 100%; margin-top: 8px;" onclick="fecharModalDificuldade()">Cancelar</button>
         </div>
     </div>
 </div>
