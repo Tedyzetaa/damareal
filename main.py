@@ -34,13 +34,13 @@ SUPABASE_KEY     = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 MP_ACCESS_TOKEN  = os.environ.get("MP_ACCESS_TOKEN")
 MP_WEBHOOK_SECRET = os.environ.get("MP_WEBHOOK_SECRET")
 
-if not SUPABASE_URL or not SUPABASE_KEY or not GOOGLE_CLIENT_ID or not MP_ACCESS_TOKEN:
+if not SUPABASE_URL or not SUPABASE_KEY or not GOOGLE_CLIENT_ID:
     raise RuntimeError("Variáveis obrigatórias ausentes")
 if not MP_WEBHOOK_SECRET:
     print("⚠️ AVISO: MP_WEBHOOK_SECRET não configurado")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
+# sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
 
 def ensure_avatars_bucket():
     try:
@@ -640,63 +640,63 @@ async def registrar_jogo(request: Request, payload: RegistrarJogoPayload):
     atualizar_pontos_e_patente(payload.googleId, tipo_para_pontos, payload.resultado)
     return {"status": "registered", "partida_id": partida_id, "delta": delta, "novo_saldo": round(saldo_atual + delta, 2)}
 
-@app.post("/api/finance/gerar-pix")
-async def gerar_pix(request: Request, payload: dict):
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Token de autenticação ausente.")
-    token = auth_header.split(" ")[1]
-    google_id = payload.get("googleId")
-    verificar_token_google(token, google_id)
-    valor = float(payload.get("valor", 0))
-    if valor < 1:
-        raise HTTPException(status_code=400, detail="Valor mínimo R$ 1,00")
-    user = supabase.table("perfis").select("email").eq("google_id", google_id).execute()
-    if not user.data or not user.data[0].get("email"):
-        raise HTTPException(status_code=400, detail="Usuário sem e-mail cadastrado.")
-    email_usuario = user.data[0]["email"]
-    payment_data = {"transaction_amount": valor, "description": f"Comprar moedas - {google_id}", "payment_method_id": "pix", "payer": {"email": email_usuario}}
-    result = sdk.payment().create(payment_data)
-    if result["status"] != 201:
-        erro_mp = result.get("response", {})
-        causa = erro_mp.get("message") or erro_mp.get("error") or str(erro_mp)
-        raise HTTPException(status_code=500, detail=f"Erro MP: {causa}")
-    payment_id = result["response"]["id"]
-    qr_code = result["response"]["point_of_interaction"]["transaction_data"]["qr_code_base64"]
-    qr_text = result["response"]["point_of_interaction"]["transaction_data"]["qr_code"]
-    supabase.table("transacoes").insert({
-        "google_id": google_id, "mp_payment_id": payment_id, "valor": valor, "tipo": "compra_moedas", "status": "pendente"
-    }).execute()
-    return {"qr_code": qr_code, "qr_text": qr_text, "payment_id": payment_id}
+# @app.post("/api/finance/gerar-pix")
+# async def gerar_pix(request: Request, payload: dict):
+#     auth_header = request.headers.get("Authorization")
+#     if not auth_header or not auth_header.startswith("Bearer "):
+#         raise HTTPException(status_code=401, detail="Token de autenticação ausente.")
+#     token = auth_header.split(" ")[1]
+#     google_id = payload.get("googleId")
+#     verificar_token_google(token, google_id)
+#     valor = float(payload.get("valor", 0))
+#     if valor < 1:
+#         raise HTTPException(status_code=400, detail="Valor mínimo R$ 1,00")
+#     user = supabase.table("perfis").select("email").eq("google_id", google_id).execute()
+#     if not user.data or not user.data[0].get("email"):
+#         raise HTTPException(status_code=400, detail="Usuário sem e-mail cadastrado.")
+#     email_usuario = user.data[0]["email"]
+#     payment_data = {"transaction_amount": valor, "description": f"Comprar moedas - {google_id}", "payment_method_id": "pix", "payer": {"email": email_usuario}}
+#     result = sdk.payment().create(payment_data)
+#     if result["status"] != 201:
+#         erro_mp = result.get("response", {})
+#         causa = erro_mp.get("message") or erro_mp.get("error") or str(erro_mp)
+#         raise HTTPException(status_code=500, detail=f"Erro MP: {causa}")
+#     payment_id = result["response"]["id"]
+#     qr_code = result["response"]["point_of_interaction"]["transaction_data"]["qr_code_base64"]
+#     qr_text = result["response"]["point_of_interaction"]["transaction_data"]["qr_code"]
+#     supabase.table("transacoes").insert({
+#         "google_id": google_id, "mp_payment_id": payment_id, "valor": valor, "tipo": "compra_moedas", "status": "pendente"
+#     }).execute()
+#     return {"qr_code": qr_code, "qr_text": qr_text, "payment_id": payment_id}
 
-@app.post("/api/finance/webhook")
-async def webhook_mp(request: Request):
-    if MP_WEBHOOK_SECRET:
-        signature = request.headers.get("x-signature", "")
-        if not signature:
-            raise HTTPException(status_code=401, detail="Assinatura ausente")
-        body = await request.body()
-        expected = hmac.new(MP_WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
-        parts = signature.split("v1=")
-        if len(parts) < 2 or not hmac.compare_digest(expected, parts[1]):
-            raise HTTPException(status_code=401, detail="Assinatura inválida")
-    data = await request.json()
-    if data.get("type") == "payment":
-        payment_id = data["data"]["id"]
-        resp = supabase.table("transacoes").select("*").eq("mp_payment_id", int(payment_id)).execute()
-        if not resp.data:
-            return {"status": "ignored"}
-        transacao = resp.data[0]
-        if transacao.get("status") == "aprovado":
-            return {"status": "already_processed"}
-        payment = sdk.payment().get(payment_id)
-        if payment["status"] == 200 and payment["response"]["status"] == "approved":
-            valor_reais = float(payment["response"]["transaction_amount"])
-            moedas_creditadas = int(valor_reais * 1000)
-            google_id = transacao["google_id"]
-            creditar_moedas(google_id, moedas_creditadas)
-            supabase.table("transacoes").update({"status": "aprovado", "updated_at": datetime.utcnow().isoformat()}).eq("id", transacao["id"]).execute()
-    return {"status": "ok"}
+# @app.post("/api/finance/webhook")
+# async def webhook_mp(request: Request):
+#     if MP_WEBHOOK_SECRET:
+#         signature = request.headers.get("x-signature", "")
+#         if not signature:
+#             raise HTTPException(status_code=401, detail="Assinatura ausente")
+#         body = await request.body()
+#         expected = hmac.new(MP_WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+#         parts = signature.split("v1=")
+#         if len(parts) < 2 or not hmac.compare_digest(expected, parts[1]):
+#             raise HTTPException(status_code=401, detail="Assinatura inválida")
+#     data = await request.json()
+#     if data.get("type") == "payment":
+#         payment_id = data["data"]["id"]
+#         resp = supabase.table("transacoes").select("*").eq("mp_payment_id", int(payment_id)).execute()
+#         if not resp.data:
+#             return {"status": "ignored"}
+#         transacao = resp.data[0]
+#         if transacao.get("status") == "aprovado":
+#             return {"status": "already_processed"}
+#         payment = sdk.payment().get(payment_id)
+#         if payment["status"] == 200 and payment["response"]["status"] == "approved":
+#             valor_reais = float(payment["response"]["transaction_amount"])
+#             moedas_creditadas = int(valor_reais * 1000)
+#             google_id = transacao["google_id"]
+#             creditar_moedas(google_id, moedas_creditadas)
+#             supabase.table("transacoes").update({"status": "aprovado", "updated_at": datetime.utcnow().isoformat()}).eq("id", transacao["id"]).execute()
+#     return {"status": "ok"}
 
 @app.get("/api/finance/saldo/{google_id}")
 async def obter_saldo(google_id: str):
