@@ -233,6 +233,8 @@ async def processar_fim_partida_aposta(sala_id: str, vencedor_id: str):
                 supabase.table("historico").insert({
                     "partida_id": sala_id, "google_id": gid, "tipo": "aposta", "resultado": "empate", "valor": valor_entrada, "delta_saldo": 0
                 }).execute()
+                # BUG 2 CORRIGIDO: atualizar pontos também para empate
+                atualizar_pontos_e_patente(gid, "apostado", "empate")
         else:
             creditar_moedas(vencedor_id, premio)
             perdedor_id = jogador2 if vencedor_id == jogador1 else jogador1
@@ -243,6 +245,9 @@ async def processar_fim_partida_aposta(sala_id: str, vencedor_id: str):
             supabase.table("historico").insert({
                 "partida_id": sala_id, "google_id": perdedor_id, "tipo": "aposta", "resultado": "derrota", "valor": valor_entrada, "delta_saldo": -valor_entrada
             }).execute()
+            # BUG 2 CORRIGIDO: atualizar pontos para vencedor e perdedor
+            atualizar_pontos_e_patente(vencedor_id, "apostado", "vitoria")
+            atualizar_pontos_e_patente(perdedor_id, "apostado", "derrota")
         supabase.table("salas_aposta").update({"status": "finalizada", "updated_at": datetime.utcnow().isoformat()}).eq("id", sala_id).execute()
     except Exception as e:
         print(f"[APOSTA] Erro ao finalizar sala {sala_id}: {e}")
@@ -613,7 +618,12 @@ async def registrar_jogo(request: Request, payload: RegistrarJogoPayload):
         except Exception:
             pass
     partida_id = payload.partida_id or str(uuid.uuid4())
-    res_check = supabase.table("historico").select("id").eq("partida_id", partida_id).execute()
+    # BUG 1 CORRIGIDO: verificar duplicidade por partida_id E google_id
+    res_check = supabase.table("historico") \
+        .select("id") \
+        .eq("partida_id", partida_id) \
+        .eq("google_id", payload.googleId) \
+        .execute()
     if res_check.data:
         return {"status": "already_registered", "partida_id": partida_id}
     res_user = supabase.table("perfis").select("saldo").eq("google_id", payload.googleId).execute()

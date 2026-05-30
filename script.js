@@ -1107,7 +1107,7 @@ function abandonarPartida() {
 }
 
 // ============================================================
-// MODAL FIM DE JOGO — DINÂMICO
+// MODAL FIM DE JOGO — DINÂMICO (CORRIGIDO PARA APOSTAS)
 // ============================================================
 function abrirModalFimJogo(winner, minhaCor) {
     const trophy   = document.getElementById('modalTrophy');
@@ -1162,8 +1162,9 @@ function abrirModalFimJogo(winner, minhaCor) {
     }
 
     document.getElementById('modalFimJogo').classList.add('open');
-    if (modoAtual === 'aposta' && window.apostaInfo) {
-        registrarJogoNoServidor(resultado, window.apostaInfo.valor);
+    // BUG 3 CORRIGIDO: não chama registrarJogoNoServidor para apostas (o servidor já registrou)
+    if (modoAtual === 'aposta') {
+        // Servidor já registrou histórico e pontos via processar_fim_partida_aposta
         setTimeout(() => buscarSaldoAtualizado(), 1500);
     } else {
         registrarJogoNoServidor(resultado, 0);
@@ -1175,7 +1176,7 @@ function fecharModal() {
 }
 
 // ============================================================
-// REGISTRAR JOGO NO BACKEND
+// REGISTRAR JOGO NO BACKEND (não usado para apostas)
 // ============================================================
 async function registrarJogoNoServidor(resultado, valorAposta = 0) {
     if (!userProfile.googleId) return;
