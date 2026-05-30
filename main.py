@@ -51,13 +51,35 @@ def ensure_avatars_bucket():
         except Exception as e:
             print(f"Erro ao criar bucket: {e}")
 
+async def stale_rooms_cleaner():
+    """Tarefa em background para limpar salas presas a cada 10 minutos."""
+    while True:
+        try:
+            # Limpa salas que estão aguardando ou em jogo há mais de 30 minutos
+            supabase.table("salas_aposta") \
+                .update({"status": "cancelada"}) \
+                .in_("status", ["aguardando", "em_jogo"]) \
+                .lt("created_at", (datetime.utcnow() - timedelta(minutes=30)).isoformat()) \
+                .execute()
+            print("[CLEANUP] Salas antigas limpas com sucesso.")
+        except Exception as e:
+            print(f"[CLEANUP] Erro na limpeza automática de salas: {e}")
+        await asyncio.sleep(600)  # Aguarda 10 minutos
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ensure_avatars_bucket()
+    # Inicia a tarefa de limpeza em segundo plano
+    cleanup_task = asyncio.create_task(stale_rooms_cleaner())
     yield
+    cleanup_task.cancel()
 
 app = FastAPI(title="Damas Real - Server-Side Engine", lifespan=lifespan)
-origins = ["http://localhost:6500", "https://damareal1.vercel.app"]
+origins = [
+    "http://localhost:6500", 
+    "https://damareal1.vercel.app",
+    "https://damareal1-2ml7.onrender.com"
+]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
@@ -1290,9 +1312,9 @@ async def websocket_ia_endpoint(websocket: WebSocket, game_id: str, player_color
                     if dificuldade == "facil":
                         p["profundidade"] = 2
                     elif dificuldade == "medio":
-                        p["profundidade"] = 4
+                        p["profundidade"] = 3
                     elif dificuldade == "dificil":
-                        p["profundidade"] = 6
+                        p["profundidade"] = 5
                 await websocket.send_text(json.dumps({
                     "type": "update", "board": p["board"],
                     "turn": p["turn"], "regras": p["regras"]
