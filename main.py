@@ -749,15 +749,29 @@ async def resgatar_bonus_diario(request: Request, payload: AuthToken):
 async def obter_ranking(modo: str):
     if modo not in ("online", "apostado"):
         raise HTTPException(status_code=400, detail="Modo inválido. Use 'online' ou 'apostado'.")
+    
     col_pontos = f"pontos_{modo}"
     col_patente = f"patente_{modo}"
-    resp = supabase.table("perfis").select(f"google_id, nick, nome, foto_url, {col_pontos}, {col_patente}").order(col_pontos, desc=True).limit(50).execute()
+    
+    # CORREÇÃO AQUI: Adicionamos o .gt(col_pontos, 0) para ignorar nulos e zerados
+    resp = supabase.table("perfis") \
+        .select(f"google_id, nick, nome, foto_url, {col_pontos}, {col_patente}") \
+        .gt(col_pontos, 0) \
+        .order(col_pontos, desc=True) \
+        .limit(50) \
+        .execute()
+    
     ranking = []
     for i, row in enumerate(resp.data or []):
         ranking.append({
-            "posicao": i+1, "google_id": row.get("google_id"), "nome": row.get("nick") or row.get("nome") or "Jogador",
-            "foto_url": row.get("foto_url") or "", "pontos": int(row.get(col_pontos) or 0), "patente": row.get(col_patente) or "bronze",
+            "posicao": i+1, 
+            "google_id": row.get("google_id"), 
+            "nome": row.get("nick") or row.get("nome") or "Jogador",
+            "foto_url": row.get("foto_url") or "", 
+            "pontos": int(row.get(col_pontos) or 0), 
+            "patente": row.get(col_patente) or "bronze",
         })
+        
     return {"modo": modo, "ranking": ranking}
 
 # ================================================================
