@@ -1202,73 +1202,145 @@ async def websocket_aposta_endpoint(websocket: WebSocket, sala_id: str, player_c
 # WEBSOCKET IA (INALTERADO)
 # ================================================================
 async def _executar_turno_ia(websocket: WebSocket, p: dict):
+    """Executa um turno da IA usando minimax com profundidade definida."""
     ia_color = p["ia_color"]
     player_color = p["player_color"]
-    _, mov = DamasEngine.minimax(p["board"], 4, -float('inf'), float('inf'), ia_color == "b", p["regras"])
+    profundidade = p["profundidade"]
+
+    # Usa asyncio.to_thread para não bloquear o event loop
+    _, mov = await asyncio.to_thread(
+        DamasEngine.minimax,
+        p["board"], profundidade, -float('inf'), float('inf'),
+        ia_color == "b", p["regras"]
+    )
     if not mov:
         return
+
     (irf, icf), (irt, ict) = mov
-    sucesso, novo_board, tem_combo = DamasEngine.validar_e_mover(p["board"], irf, icf, irt, ict, ia_color, p["regras"], continue_capture=False)
+    sucesso, novo_board, tem_combo = DamasEngine.validar_e_mover(
+        p["board"], irf, icf, irt, ict, ia_color, p["regras"], continue_capture=False
+    )
     if not sucesso:
         return
+
     p["board"] = novo_board
     while tem_combo:
         await asyncio.sleep(0.4)
-        await websocket.send_text(json.dumps({"type": "update", "board": p["board"], "turn": ia_color, "regras": p["regras"]}))
+        await websocket.send_text(json.dumps({
+            "type": "update", "board": p["board"],
+            "turn": ia_color, "regras": p["regras"]
+        }))
         proximos = DamasEngine.obter_todos_movimentos_validos(p["board"], ia_color, p["regras"])
         combos = [m for m in proximos if m[0] == (irt, ict)]
         if combos:
             (irf, icf), (irt, ict) = combos[0]
-            _, p["board"], tem_combo = DamasEngine.validar_e_mover(p["board"], irf, icf, irt, ict, ia_color, p["regras"], continue_capture=True)
+            _, p["board"], tem_combo = DamasEngine.validar_e_mover(
+                p["board"], irf, icf, irt, ict, ia_color, p["regras"], continue_capture=True
+            )
         else:
             break
+
     p["turn"] = player_color
     venc = DamasEngine.verificar_fim_de_jogo(p["board"], p["regras"])
     if venc:
-        await websocket.send_text(json.dumps({"type": "game_over", "winner": venc, "partida_id": p["partida_id"], "board": p["board"]}))
+        await websocket.send_text(json.dumps({
+            "type": "game_over", "winner": venc,
+            "partida_id": p["partida_id"], "board": p["board"]
+        }))
     else:
-        await websocket.send_text(json.dumps({"type": "update", "board": p["board"], "turn": player_color, "regras": p["regras"]}))
+        await websocket.send_text(json.dumps({
+            "type": "update", "board": p["board"],
+            "turn": player_color, "regras": p["regras"]
+        }))
 
 @app.websocket("/ws/ia/{game_id}/{player_color}")
 async def websocket_ia_endpoint(websocket: WebSocket, game_id: str, player_color: str = "w"):
     if player_color not in ("w", "b"):
         player_color = "w"
     ia_color = "b" if player_color == "w" else "w"
+    profundidade_padrao = 4  # Médio (fallback)
+
     await websocket.accept()
-    p = {"board": DamasEngine.criar_tabuleiro_inicial(), "turn": "w", "regras": "brasileira", "partida_id": str(uuid.uuid4()), "player_color": player_color, "ia_color": ia_color}
-    await websocket.send_text(json.dumps({"type": "init", "board": p["board"], "turn": p["turn"], "regras": p["regras"]}))
+    p = {
+        "board":        DamasEngine.criar_tabuleiro_inicial(),
+        "turn":         "w",
+        "regras":       "brasileira",
+        "partida_id":   str(uuid.uuid4()),
+        "player_color": player_color,
+        "ia_color":     ia_color,
+        "profundidade": profundidade_padrao
+    }
+
+    await websocket.send_text(json.dumps({
+        "type": "init", "board": p["board"], "turn": p["turn"], "regras": p["regras"]
+    }))
+
     if player_color == "b":
         await asyncio.sleep(0.5)
         await _executar_turno_ia(websocket, p)
+
     try:
         while True:
             msg = json.loads(await websocket.receive_text())
             if msg.get("type") == "config_rules":
                 p["regras"] = msg.get("regras", "brasileira")
-                await websocket.send_text(json.dumps({"type": "update", "board": p["board"], "turn": p["turn"], "regras": p["regras"]}))
+                # Permite também configurar a dificuldade via config_rules
+                if "dificuldade" in msg:
+                    dificuldade = msg["dificuldade"]
+                    if dificuldade == "facil":
+                        p["profundidade"] = 2
+                    elif dificuldade == "medio":
+                        p["profundidade"] = 4
+                    elif dificuldade == "dificil":
+                        p["profundidade"] = 6
+                await websocket.send_text(json.dumps({
+                    "type": "update", "board": p["board"],
+                    "turn": p["turn"], "regras": p["regras"]
+                }))
                 continue
+
             if msg.get("type") == "move" and p["turn"] == player_color:
                 irf, icf = algebraic_to_index(msg["from"])
                 irt, ict = algebraic_to_index(msg["to"])
+
                 tem_que_comer = DamasEngine.jogador_tem_capturas_possiveis(p["board"], player_color, p["regras"])
                 eh_captura = abs(irf - irt) >= 2
+
                 if tem_que_comer and not eh_captura:
-                    await websocket.send_text(json.dumps({"type": "invalid_move", "message": "Movimento inválido! É obrigado a capturar."}))
+                    await websocket.send_text(json.dumps({
+                        "type": "invalid_move",
+                        "message": "Movimento inválido! É obrigado a capturar."
+                    }))
                     continue
-                sucesso, novo_board, motivo = DamasEngine.validar_e_mover(p["board"], irf, icf, irt, ict, player_color, p["regras"])
+
+                sucesso, novo_board, motivo = DamasEngine.validar_e_mover(
+                    p["board"], irf, icf, irt, ict, player_color, p["regras"]
+                )
                 if not sucesso:
                     await websocket.send_text(json.dumps({"type": "invalid_move", "message": motivo}))
                     continue
+
                 p["board"] = novo_board
                 venc = DamasEngine.verificar_fim_de_jogo(p["board"], p["regras"])
                 if venc:
-                    await websocket.send_text(json.dumps({"type": "game_over", "winner": venc, "partida_id": p["partida_id"], "board": p["board"]}))
+                    await websocket.send_text(json.dumps({
+                        "type": "game_over", "winner": venc,
+                        "partida_id": p["partida_id"], "board": p["board"]
+                    }))
                     continue
+
                 if motivo and eh_captura:
-                    await websocket.send_text(json.dumps({"type": "update", "board": p["board"], "turn": player_color, "regras": p["regras"], "must_continue": True, "piece": [irt, ict]}))
+                    await websocket.send_text(json.dumps({
+                        "type": "update", "board": p["board"],
+                        "turn": player_color, "regras": p["regras"],
+                        "must_continue": True, "piece": [irt, ict]
+                    }))
                 else:
                     p["turn"] = ia_color
-                    await websocket.send_text(json.dumps({"type": "update", "board": p["board"], "turn": ia_color, "regras": p["regras"]}))
+                    await websocket.send_text(json.dumps({
+                        "type": "update", "board": p["board"],
+                        "turn": ia_color, "regras": p["regras"]
+                    }))
                     await asyncio.sleep(0.5)
                     await _executar_turno_ia(websocket, p)
     except WebSocketDisconnect:

@@ -429,6 +429,10 @@ function onMensagemServidor(data, minhaCor) {
 function jogarContraIA() {
     const corAleatoria = Math.random() < 0.5 ? 'w' : 'b';
     const corNome      = corAleatoria === 'w' ? 'Brancas' : 'Pretas';
+    const dificuldade  = document.getElementById('iaDifficulty')?.value || 'medio';
+    let profundidade   = 4; // médio
+    if (dificuldade === 'facil') profundidade = 2;
+    else if (dificuldade === 'dificil') profundidade = 6;
 
     modoAtual       = 'ia';
     capturedByWhite = 0;
@@ -461,7 +465,9 @@ function jogarContraIA() {
             chatInput.removeEventListener('keydown', handleChatEnter);
             chatInput.addEventListener('keydown', handleChatEnter);
         }
-        showToast(`Você joga de ${corNome}. Boa sorte!`, 'success');
+        // Envia a dificuldade para o backend via mensagem config_rules
+        ws.send(JSON.stringify({ type: 'config_rules', regras: 'brasileira', dificuldade: dificuldade }));
+        showToast(`Você joga de ${corNome} (IA nível ${dificuldade}). Boa sorte!`, 'success');
     };
     ws.onmessage = (e) => onMensagemServidor(JSON.parse(e.data), minhaCorAtual);
     ws.onclose = (event) => {
