@@ -78,7 +78,7 @@ app = FastAPI(title="Damas Real - Server-Side Engine", lifespan=lifespan)
 origins = [
     "http://localhost:6500", 
     "https://damareal1.vercel.app",
-    "https://damareal1-2ml7.onrender.com"
+    "https://damareal1.onrender.com"
 ]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 limiter = Limiter(key_func=get_remote_address)

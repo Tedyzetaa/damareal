@@ -5,5 +5,5 @@ const CONFIG = {
     // O Google exige que o Client Secret fique apenas no seu servidor.
     API_URL: window.location.hostname === 'localhost'
         ? 'http://localhost:6500'
-        : 'https://damareal1-2ml7.onrender.com'
+        : 'https://damareal1.onrender.com'
 };
